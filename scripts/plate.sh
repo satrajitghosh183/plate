@@ -9,6 +9,6 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 [ -f .env ] || { echo "No .env here. Copy .env.example to .env and fill it in"; exit 1; }
 set -a; . ./.env; set +a
-export PUBLIC_URL="${PUBLIC_URL:-https://plate-api-acbv.onrender.com}" APP_URL="${APP_URL:-https://plate.vercel.app}"
+export PUBLIC_URL="${PUBLIC_URL:-https://plate-api-acbv.onrender.com}" APP_URL="${APP_URL:-https://plate-lake.vercel.app}"
 cargo build -q --release -p gym-server
 exec ./target/release/gym-server "$@"

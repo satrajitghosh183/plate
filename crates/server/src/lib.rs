@@ -86,6 +86,9 @@ pub fn router(st: AppState) -> Router {
         .route("/auth/login/start", post(auth::login_start))
         .route("/auth/login/finish", post(auth::login_finish))
         .route("/auth/logout", post(auth::logout))
+        .route("/auth/password", post(auth::password_login))
+        .route("/auth/google/start", get(auth::google_start))
+        .route("/auth/google/callback", get(auth::google_callback))
         .layer(axum::middleware::from_fn_with_state(st.clone(), auth::same_origin))
         .layer(axum::middleware::from_fn_with_state(st.clone(), auth::throttle))
         .layer(SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-store")));

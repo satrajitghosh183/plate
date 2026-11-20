@@ -156,9 +156,66 @@ async fn wait_for_code(listener: &tokio::net::TcpListener, state: &str) -> anyho
     }
 }
 
+// ---------- ways to sign in ----------
+
+/// Your email: the only one that password and Google sign-in accept.
+pub async fn set_owner_email(db: &PgPool, email: &str) -> anyhow::Result<String> {
+    let email = email.trim().to_lowercase();
+    if !email.contains('@') || email.len() > 200 {
+        bail!("That doesn't look like an email address");
+    }
+    let mut c = db.acquire().await?;
+    crate::store::set_setting(&mut c, "owner_email", &email).await.map_err(|e| anyhow!(e.message()))?;
+    Ok(email)
+}
+
+pub async fn set_password(db: &PgPool, password: &str) -> anyhow::Result<()> {
+    if password.chars().count() < 12 {
+        bail!("Use at least 12 characters");
+    }
+    let hash = crate::auth::hash_password(password)?;
+    let mut c = db.acquire().await?;
+    crate::store::set_setting(&mut c, "password_hash", &hash).await.map_err(|e| anyhow!(e.message()))
+}
+
+/// Google sign-in: reads GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET from your .env and stores them sealed.
+pub async fn set_google(db: &PgPool, cfg: &Config) -> anyhow::Result<String> {
+    let key = cfg.token_key.context("TOKEN_KEY is not set. It must match the one on Render")?;
+    crate::auth::save_google_app(db, &key, &env("GOOGLE_CLIENT_ID")?, &env("GOOGLE_CLIENT_SECRET")?).await?;
+    Ok(cfg.app_link("/api/auth/google/callback"))
+}
+
+/// Switch password or Google sign-in off. Passkeys stay.
+pub async fn sign_in_off(db: &PgPool, which: &str) -> anyhow::Result<()> {
+    let key = match which {
+        "password" => "password_hash",
+        "google" => "google_app",
+        _ => bail!("Use password or google"),
+    };
+    sqlx::query("delete from settings where key = $1").bind(key).execute(db).await?;
+    Ok(())
+}
+
+/// Sign out every device.
+pub async fn sign_out_everywhere(db: &PgPool) -> anyhow::Result<u64> {
+    Ok(sqlx::query("delete from auth_sessions").execute(db).await?.rows_affected())
+}
+
 /// One line per connection, for `plate status`.
 pub async fn status(db: &PgPool) -> anyhow::Result<Vec<String>> {
     let mut out = Vec::new();
+    let has = |k: &'static str| async move { sqlx::query_as::<_, (i64,)>("select count(*) from settings where key = $1").bind(k).fetch_one(db).await.map(|r| r.0 > 0) };
+    let email: Option<(serde_json::Value,)> = sqlx::query_as("select value from settings where key = 'owner_email'").fetch_optional(db).await?;
+    let passkeys: (i64,) = sqlx::query_as("select count(*) from passkeys").fetch_one(db).await?;
+    let sessions: (i64,) = sqlx::query_as("select count(*) from auth_sessions where expires_at > now()").fetch_one(db).await?;
+    out.push(format!(
+        "Sign-in: {} passkey(s); password {}; Google {}; email {}; {} device(s) signed in",
+        passkeys.0,
+        if has("password_hash").await? { "on" } else { "off" },
+        if has("google_app").await? { "on" } else { "off" },
+        email.and_then(|e| e.0.as_str().map(str::to_string)).unwrap_or_else(|| "not set".into()),
+        sessions.0
+    ));
     let key: Option<(serde_json::Value,)> = sqlx::query_as("select value from settings where key = 'ingest_key_hash'").fetch_optional(db).await?;
     let last: (Option<DateTime<Utc>>,) = sqlx::query_as(
         "select greatest((select max(updated_at) from health_days), (select max(received_at) from health_workouts), (select max(received_at) from close_signals))",

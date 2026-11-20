@@ -529,3 +529,107 @@ async fn guessing_the_setup_code_or_phone_key_is_throttled() {
     assert!(limited, "40 wrong phone keys in a row were never slowed down");
     t.done().await;
 }
+
+async fn raw(t: &T, req: Request<Body>) -> axum::response::Response {
+    t.app.clone().oneshot(req).await.unwrap()
+}
+
+fn set_cookie(res: &axum::response::Response, name: &str) -> Option<String> {
+    res.headers().get_all("set-cookie").iter().filter_map(|v| v.to_str().ok()).find(|v| v.starts_with(&format!("{name}="))).map(str::to_string)
+}
+
+#[tokio::test]
+async fn without_signing_in_nothing_is_readable() {
+    let t = T::new().await;
+    for path in ["/api/bootstrap", "/api/agents", "/api/export", "/api/sessions", "/api/health", "/api/activity", "/api/connections"] {
+        let (s, _) = t.req("GET", path, Auth::None, None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "GET {path} answered {s} without a sign-in");
+        let (s, _) = t.req("GET", path, Auth::Bearer(new_secret("s")), None).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "GET {path} answered {s} to a made-up token");
+    }
+    t.done().await;
+}
+
+#[tokio::test]
+async fn opening_the_app_renews_the_sign_in() {
+    let t = T::new().await;
+    // A session about to run out.
+    sqlx::query("update auth_sessions set expires_at = now() + interval '1 day'").execute(&t.st.db).await.unwrap();
+    let res = raw(&t, Request::get("/api/auth/status").header("cookie", format!("gym_session={}", t.owner)).body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let cookie = set_cookie(&res, "gym_session").expect("the cookie is sent again");
+    assert!(cookie.contains("Max-Age=34560000") && cookie.contains("HttpOnly"), "renewed cookie: {cookie}");
+    let (days,): (f64,) = sqlx::query_as("select (extract(epoch from (expires_at - now())) / 86400)::float8 from auth_sessions").fetch_one(&t.st.db).await.unwrap();
+    assert!(days > 399.0, "session now ends in {days} days");
+    // Signed out: no cookie handed out.
+    let res = raw(&t, Request::get("/api/auth/status").body(Body::empty()).unwrap()).await;
+    assert!(set_cookie(&res, "gym_session").is_none());
+    t.done().await;
+}
+
+#[tokio::test]
+async fn password_sign_in_only_for_your_email_and_password() {
+    let t = T::new().await;
+    let (s, _) = t.req("POST", "/api/auth/password", Auth::None, Some(json!({ "email": "me@example.com", "password": "anything at all" }))).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "off until set on the server");
+    let password = new_secret("pw");
+    gym_server::admin::set_owner_email(&t.st.db, "Me@Example.com").await.unwrap();
+    gym_server::admin::set_password(&t.st.db, &password).await.unwrap();
+    assert!(gym_server::admin::set_password(&t.st.db, "short").await.is_err());
+    let (_, v) = t.req("GET", "/api/auth/status", Auth::None, None).await;
+    assert_eq!((v["password"].as_bool(), v["google"].as_bool(), v["needs_setup"].as_bool()), (Some(true), Some(false), Some(false)), "{v}");
+    let stored: (Value,) = sqlx::query_as("select value from settings where key = 'password_hash'").fetch_one(&t.st.db).await.unwrap();
+    assert!(stored.0.as_str().unwrap().starts_with("$argon2id$") && !stored.0.to_string().contains(&password));
+    for (email, pw) in [("me@example.com", new_secret("wrong")), ("someone@example.com", password.clone())] {
+        let (s, _) = t.req("POST", "/api/auth/password", Auth::None, Some(json!({ "email": email, "password": pw }))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{email} got in");
+    }
+    let res = raw(
+        &t,
+        Request::post("/api/auth/password").header("content-type", "application/json").header("origin", ORIGIN)
+            .body(Body::from(json!({ "email": " ME@example.com ", "password": password }).to_string())).unwrap(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let token = set_cookie(&res, "gym_session").unwrap().split(';').next().unwrap().trim_start_matches("gym_session=").to_string();
+    let res = raw(&t, Request::get("/api/bootstrap").header("cookie", format!("gym_session={token}")).body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::OK, "the password session opens the app");
+    // Another site can't post the form for you.
+    let (s, _) = t.req("POST", "/api/auth/password", Auth::None, Some(json!({}))).await;
+    assert_ne!(s, StatusCode::OK);
+    t.done().await;
+}
+
+#[tokio::test]
+async fn google_sign_in_goes_to_google_and_refuses_a_forged_return() {
+    let t = T::new().await;
+    let res = raw(&t, Request::get("/api/auth/google/start").body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN, "off until set on the server");
+    gym_server::admin::set_owner_email(&t.st.db, "me@example.com").await.unwrap();
+    gym_server::auth::save_google_app(&t.st.db, t.st.cfg.token_key.as_ref().unwrap(), "client-id.apps.googleusercontent.com", &new_secret("gsecret")).await.unwrap();
+    let (_, v) = t.req("GET", "/api/auth/status", Auth::None, None).await;
+    assert_eq!(v["google"].as_bool(), Some(true), "{v}");
+    let stored: (Value,) = sqlx::query_as("select value from settings where key = 'google_app'").fetch_one(&t.st.db).await.unwrap();
+    assert!(!stored.0.to_string().contains("gsecret"), "the secret is stored sealed");
+
+    let res = raw(&t, Request::get("/api/auth/google/start").body(Body::empty()).unwrap()).await;
+    assert!(res.status().is_redirection(), "{}", res.status());
+    let to = url::Url::parse(res.headers()["location"].to_str().unwrap()).unwrap();
+    assert_eq!(to.host_str(), Some("accounts.google.com"));
+    let q: std::collections::HashMap<_, _> = to.query_pairs().into_owned().collect();
+    assert_eq!(q["redirect_uri"], format!("{ORIGIN}/api/auth/google/callback"));
+    assert_eq!(q["login_hint"], "me@example.com");
+    let ceremony = set_cookie(&res, "gym_google").unwrap().split(';').next().unwrap().to_string();
+
+    // A return whose state doesn't match is refused before Google is ever asked.
+    let res = raw(
+        &t,
+        Request::get(format!("/api/auth/google/callback?code=x&state={}", new_secret("g"))).header("cookie", &ceremony).body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert!(res.headers()["location"].to_str().unwrap().ends_with("/?signin=google-expired"), "{:?}", res.headers()["location"]);
+    assert!(set_cookie(&res, "gym_session").is_none(), "no session from a forged return");
+    let res = raw(&t, Request::get(format!("/api/auth/google/callback?code=x&state={}", q["state"])).body(Body::empty()).unwrap()).await;
+    assert!(set_cookie(&res, "gym_session").is_none(), "no session without the browser's own cookie");
+    t.done().await;
+}

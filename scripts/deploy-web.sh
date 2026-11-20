@@ -8,6 +8,8 @@ cd "$(dirname "$0")/.."
 BACKEND_URL="$BACKEND_URL" ./scripts/build-web.sh
 test -f dist/vercel.json || { echo "dist/vercel.json is missing"; exit 1; }
 mkdir -p dist/.vercel && cp -f .vercel/project.json dist/.vercel/ 2>/dev/null || true
-cd dist && npx --yes vercel deploy --prod --yes
+cd dist
+[ -f .vercel/project.json ] || npx --yes vercel link --yes --project plate
+npx --yes vercel deploy --prod --yes
 # Keep the project link for next time.
 mkdir -p ../.vercel && cp -f .vercel/project.json ../.vercel/ 2>/dev/null || true

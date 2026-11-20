@@ -28,7 +28,7 @@ services:
         sync: false # from your .env: the same key your Mac uses for `plate authorize`
       # Public addresses, not secret.
       - key: APP_URL
-        value: https://plate.vercel.app
+        value: https://plate-lake.vercel.app
       - key: PUBLIC_URL
         value: https://plate-api-acbv.onrender.com
       - key: RUST_LOG

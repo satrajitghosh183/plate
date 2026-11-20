@@ -18,7 +18,12 @@ const USAGE: &str = "plate: the Plate server and its setup commands
   plate agent list           agents and when they were last used
   plate agent revoke <name>  stop an agent's link working
   plate authorize strava     sign in to Strava in your browser; tokens are stored encrypted
-  plate authorize spotify    the same for Spotify";
+  plate authorize spotify    the same for Spotify
+  plate login email <addr>   your email, the only one password and Google sign-in accept
+  plate login password       set or change the password (typed, not shown)
+  plate login google         switch on Google sign-in (GOOGLE_CLIENT_ID/SECRET from .env)
+  plate login off password|google
+  plate logout-everywhere    sign out every device";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -99,6 +104,31 @@ async fn command(words: &[&str]) -> anyhow::Result<()> {
             let p = Provider::parse(which).ok_or_else(|| anyhow::anyhow!("Use strava or spotify"))?;
             let who = gym_server::admin::authorize(&db, &cfg, p).await?;
             println!("{} is connected as {who}. The tokens are stored encrypted on the server.", p.label());
+        }
+        ["login", "email", addr] => {
+            let e = gym_server::admin::set_owner_email(&db, addr).await?;
+            println!("Sign-in email set to {e}.");
+        }
+        ["login", "password"] => {
+            let p1 = rpassword::prompt_password("New password (12+ characters): ")?;
+            let p2 = rpassword::prompt_password("Again: ")?;
+            if p1 != p2 {
+                anyhow::bail!("The two didn't match. Nothing changed");
+            }
+            gym_server::admin::set_password(&db, &p1).await?;
+            println!("Password saved (hashed). Sign in with your email and this password.");
+        }
+        ["login", "google"] => {
+            let redirect = gym_server::admin::set_google(&db, &cfg).await?;
+            println!("Google sign-in is on. The Google app's authorized redirect URI must be:\n  {redirect}");
+        }
+        ["login", "off", which] => {
+            gym_server::admin::sign_in_off(&db, which).await?;
+            println!("{which} sign-in is off.");
+        }
+        ["logout-everywhere"] => {
+            let n = gym_server::admin::sign_out_everywhere(&db).await?;
+            println!("Signed out {n} device(s).");
         }
         _ => {
             println!("{USAGE}");

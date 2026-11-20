@@ -389,8 +389,15 @@ pub struct Bootstrap {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthStatus {
     pub signed_in: bool,
-    /// No passkey exists yet, so the setup code screen is shown.
+    /// No way in exists yet (no passkey, password or Google), so the setup code screen is shown.
     pub needs_setup: bool,
+    /// Which ways in are switched on. Password and Google are set up on the server only.
+    #[serde(default)]
+    pub passkey: bool,
+    #[serde(default)]
+    pub password: bool,
+    #[serde(default)]
+    pub google: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

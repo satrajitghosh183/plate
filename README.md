@@ -51,6 +51,10 @@ scripts/plate.sh phone-key            # key for the iPhone's Apple Health shortc
 scripts/plate.sh agent add Muse       # Muse's link, shown once; also: agent list, agent revoke Muse
 scripts/plate.sh authorize strava     # browser sign-in; tokens stored encrypted in the database
 scripts/plate.sh authorize spotify
+scripts/plate.sh login email you@example.com   # the only email password and Google accept
+scripts/plate.sh login password                # typed, never shown or stored in plain text
+scripts/plate.sh login google                  # needs GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env
+scripts/plate.sh logout-everywhere
 ```
 
 For `authorize`, put the developer app's id and secret in `.env` first. Strava: any app at

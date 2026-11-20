@@ -265,4 +265,6 @@ Motion follows the prototype: only movement and fades, never animated blur. iPho
 7. **Phase 0.** Open `/phase0.html` from the Home Screen app and record the results here.
 8. **Spotify and Strava** (only if you already pay for them): create the developer apps, put their ids and secrets in `.env`, and run `scripts/plate.sh authorize spotify` and `scripts/plate.sh authorize strava`.
 
+**Signing in.** Three ways, all switched on from the server: a passkey (Face ID or Touch ID, synced by iCloud Keychain), your email and password (`plate login email you@…`, then `plate login password`; stored as an Argon2id hash), and Google (`plate login google`, which only accepts a verified Google account with your email). "Sign in with Apple" itself needs a paid Apple developer account, so it is left out. A sign-in lasts 400 days and renews every time the app opens. Without one, every data route answers 401. `plate logout-everywhere` signs out every device.
+
 **No connect screens in the app.** Keys, agent links and provider sign-ins are made only with the `plate` command; the app shows their status. Sign-in and the phone's intake are rate limited to 30 requests a minute per address.
