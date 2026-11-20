@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/server", "crates/web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["serde", "v4"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }
+
+# Small debug builds: the disk is nearly full.
+[profile.dev]
+debug = 0
+
+[profile.dev.package."*"]
+opt-level = 1
+
+# The server: quick to build on Render's free builders, plenty fast for one person.
+[profile.release]
+strip = true
+
+# The web bundle is downloaded on a phone, so build it for size.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

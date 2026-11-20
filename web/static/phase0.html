@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phone tests</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  :root { color-scheme: dark; --fg: #f5f5f7; --fg2: #a1a1a6; --line: rgba(255,255,255,.12); --bad: #ef6a6b; }
+  body { margin: 0; background: #000; color: var(--fg); font: 15px/22px -apple-system, "Helvetica Neue", Arial, sans-serif;
+    padding: calc(env(safe-area-inset-top) + 24px) max(20px, env(safe-area-inset-right)) calc(env(safe-area-inset-bottom) + 40px) max(20px, env(safe-area-inset-left)); }
+  h1 { font: 400 34px/1.1 Georgia, serif; margin: 0 0 8px; }
+  p { color: var(--fg2); margin: 0 0 16px; }
+  section { border-top: 1px solid var(--line); padding: 16px 0; }
+  h2 { font-size: 16px; margin: 0 0 4px; }
+  .result { font: 13px/20px ui-monospace, Menlo, monospace; color: var(--fg2); white-space: pre-wrap; }
+  .pass { color: var(--fg); } .fail { color: var(--bad); }
+  button { font: inherit; height: 40px; padding: 0 16px; border-radius: 20px; border: 0; background: #f5f5f7; color: #000; margin: 8px 8px 0 0; }
+  input { font: inherit; width: 100%; box-sizing: border-box; height: 40px; border-radius: 10px; border: 1px solid var(--line); background: #111; color: var(--fg); padding: 0 10px; margin-top: 8px; }
+  iframe { width: 100%; aspect-ratio: 16/9; border: 0; border-radius: 12px; background: #111; margin-top: 8px; }
+  iframe.reel { aspect-ratio: 9/14; }
+</style>
+</head>
+<body>
+<h1>Phone tests</h1>
+<p>Phase 0. Open this page from the Home Screen icon of the app (Share › Add to Home Screen), then run each test and note pass or fail in SPEC.md.</p>
+
+<section>
+  <h2>Installed app</h2>
+  <div class="result" id="standalone"></div>
+</section>
+
+<section>
+  <h2>Passkeys</h2>
+  <div class="result" id="passkey"></div>
+</section>
+
+<section>
+  <h2>Backend wake-up through the forwarder</h2>
+  <p>Wait 20 minutes after the last use so Render is asleep, then tap. Shows how long the first answer takes and what came back while it woke.</p>
+  <button id="wake">Time a wake-up</button>
+  <div class="result" id="wake-out"></div>
+</section>
+
+<section>
+  <h2>YouTube inside the app</h2>
+  <p>Tap play. Pass if it plays here with sound and does not open YouTube.</p>
+  <input id="yt" value="https://www.youtube-nocookie.com/embed/rT7DgCr-3pg?playsinline=1&rel=0&modestbranding=1">
+  <button id="yt-load">Load</button>
+  <div id="yt-box"></div>
+</section>
+
+<section>
+  <h2>Instagram reel inside the app</h2>
+  <p>Paste a public reel link. Pass if it plays past the first frame with sound.</p>
+  <input id="ig" placeholder="https://www.instagram.com/reel/CODE/">
+  <button id="ig-load">Load</button>
+  <div id="ig-box"></div>
+</section>
+
+<section>
+  <h2>Screen stays on</h2>
+  <p>Tap, then leave the phone alone for longer than its auto-lock time.</p>
+  <button id="wl">Keep the screen on</button>
+  <div class="result" id="wl-out"></div>
+</section>
+
+<section>
+  <h2>Sound when rest ends</h2>
+  <button id="chime">Play the chime in 5 seconds</button>
+  <div class="result" id="chime-out"></div>
+</section>
+
+<section>
+  <h2>Saved sets survive</h2>
+  <p>Tap, close the app from the app switcher, wait (an hour, then a week), open this page again.</p>
+  <button id="store">Save a test set</button>
+  <div class="result" id="store-out"></div>
+</section>
+
+<section>
+  <h2>Glass while scrolling</h2>
+  <p>Open the app, scroll the Plan tab and start a session. Pass if panes move without stutter.</p>
+</section>
+
+<section>
+  <h2>Shortcuts and Spotify</h2>
+  <p>Workout-ended ping with the phone locked and with the phone in the locker; evening automation while locked; Spotify listing the phone and play and skip working. Check each on the Connect tab after setting them up (shortcuts/README.md).</p>
+</section>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const ok = (el, pass, text) => { el.className = "result " + (pass ? "pass" : "fail"); el.textContent = (pass ? "Pass · " : "Fail · ") + text; };
+
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  ok($("standalone"), standalone, standalone ? "running from the Home Screen" : "opened in Safari; add it to the Home Screen first");
+
+  (async () => {
+    const has = !!window.PublicKeyCredential;
+    const uv = has && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable ? await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable() : false;
+    ok($("passkey"), has && uv, `WebAuthn ${has ? "present" : "missing"}, Face ID or Touch ID ${uv ? "available" : "unavailable"}`);
+  })();
+
+  $("wake").onclick = async () => {
+    const out = $("wake-out"), t0 = performance.now(), seen = [];
+    out.className = "result"; out.textContent = "Waiting…";
+    for (let i = 0; i < 40; i++) {
+      try {
+        const r = await fetch("/api/auth/status", { cache: "no-store" });
+        const type = r.headers.get("content-type") || "";
+        seen.push(`${((performance.now() - t0) / 1000).toFixed(1)} s: ${r.status} ${type.split(";")[0]}`);
+        if (r.ok && type.includes("json")) { ok(out, true, `answered after ${((performance.now() - t0) / 1000).toFixed(1)} s\n` + seen.join("\n")); return; }
+      } catch (e) { seen.push(`${((performance.now() - t0) / 1000).toFixed(1)} s: ${e.message}`); }
+      out.textContent = seen.join("\n");
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    ok(out, false, "no answer in two minutes\n" + seen.join("\n"));
+  };
+
+  $("yt-load").onclick = () => {
+    $("yt-box").innerHTML = "";
+    const f = document.createElement("iframe");
+    f.src = $("yt").value; f.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+    $("yt-box").appendChild(f);
+  };
+
+  $("ig-load").onclick = () => {
+    const m = $("ig").value.match(/instagram\.com\/(reel|reels|p)\/([A-Za-z0-9_-]+)/);
+    $("ig-box").innerHTML = m ? "" : '<div class="result fail">Paste a reel or post link</div>';
+    if (!m) return;
+    const f = document.createElement("iframe");
+    f.className = "reel"; f.src = `https://www.instagram.com/${m[1] === "reels" ? "reel" : m[1]}/${m[2]}/embed/`;
+    $("ig-box").appendChild(f);
+  };
+
+  $("wl").onclick = async () => {
+    try { const l = await navigator.wakeLock.request("screen"); ok($("wl-out"), true, "wake lock held; did the screen stay on?"); l.onrelease = () => { $("wl-out").textContent += "\nreleased"; }; }
+    catch (e) { ok($("wl-out"), false, e.message || "not supported"); }
+  };
+
+  let ctx;
+  $("chime").onclick = () => {
+    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume();
+    $("chime-out").textContent = "Lock the phone or switch apps now…";
+    setTimeout(() => {
+      const t = ctx.currentTime, o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = 880; g.gain.setValueAtTime(0.2, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
+      o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.85);
+      $("chime-out").textContent = "Played. Did you hear it?";
+    }, 5000);
+  };
+
+  const last = localStorage.getItem("phase0.set");
+  $("store-out").textContent = last ? `A test set saved ${new Date(+last).toLocaleString()} is still here` : "Nothing saved yet";
+  $("store").onclick = () => { localStorage.setItem("phase0.set", String(Date.now())); $("store-out").textContent = "Saved now. Close the app and come back later"; };
+</script>
+</body>
+</html>

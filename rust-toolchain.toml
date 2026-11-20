@@ -1,0 +1,6 @@
+# Render and CI read this, so every build uses the same compiler.
+[toolchain]
+channel = "1.99.0"
+targets = ["wasm32-unknown-unknown"]
+components = ["clippy", "rustfmt"]
+profile = "minimal"

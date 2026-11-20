@@ -1,0 +1,35 @@
+# Render blueprint: the backend on the free plan.
+# Free web services sleep after 15 minutes without traffic and take about a minute to wake.
+# The database is Neon's free Postgres (Render's free Postgres is deleted after 30 days).
+services:
+  - type: web
+    name: plate-api
+    runtime: rust
+    plan: free
+    region: ohio # next to the Neon database (AWS us-east-2)
+    buildCommand: cargo build --release -p gym-server
+    startCommand: ./target/release/gym-server
+    healthCheckPath: /healthz
+    autoDeploy: true
+    buildFilter:
+      paths:
+        - crates/core/**
+        - crates/server/**
+        - data/**
+        - Cargo.toml
+        - Cargo.lock
+    envVars:
+      # Secrets: you paste these on Render's screen; they never pass through the repository.
+      - key: DATABASE_URL
+        sync: false # Neon direct connection string (sslmode=require)
+      - key: SETUP_CODE
+        sync: false # from your .env; typed once on the phone to save the first passkey
+      - key: TOKEN_KEY
+        sync: false # from your .env: the same key your Mac uses for `plate authorize`
+      # Public addresses, not secret.
+      - key: APP_URL
+        value: https://plate.vercel.app
+      - key: PUBLIC_URL
+        value: https://plate-api.onrender.com
+      - key: RUST_LOG
+        value: info,tower_http=info,sqlx=warn

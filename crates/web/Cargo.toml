@@ -1,0 +1,33 @@
+[package]
+name = "gym-web"
+description = "The phone app: Leptos compiled to WebAssembly, installed from the web."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gym-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+uuid = { workspace = true, features = ["js"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "std", "clock", "wasmbind"] }
+leptos = { version = "0.8", features = ["csr"] }
+# Must match the installed wasm-bindgen CLI exactly.
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+  "Window", "Document", "Element", "HtmlElement", "Storage", "Navigator", "Location", "History",
+  "Request", "RequestInit", "RequestMode", "RequestCredentials", "Response", "Headers",
+  "CredentialsContainer", "PublicKeyCredential", "CredentialCreationOptions", "CredentialRequestOptions",
+  "AuthenticatorAttestationResponse", "AuthenticatorAssertionResponse", "AuthenticatorResponse",
+  "PointerEvent", "MouseEvent", "KeyboardEvent", "Event", "EventTarget", "DomRect",
+  "MediaQueryList", "WakeLock", "WakeLockSentinel", "WakeLockType", "ServiceWorkerContainer",
+  "Animation", "KeyframeAnimationOptions", "VisibilityState", "HtmlInputElement", "HtmlTextAreaElement",
+  "HtmlSelectElement", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition", "Clipboard",
+] }
+console_error_panic_hook = "0.1"
+gloo-timers = { version = "0.3", features = ["futures"] }
+futures = "0.3"
