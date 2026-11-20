@@ -5,7 +5,7 @@ automations in the Shortcuts app do it. Both use the **phone key**, made on the 
 `scripts/plate.sh phone-key` (the app has no screen for it). That key can only send data. It
 cannot read anything, and making a new one stops the old one at once.
 
-Replace `API` below with the backend's address (for example `https://plate-api.onrender.com`)
+Replace `API` below with the backend's address (for example `https://plate-api-acbv.onrender.com`)
 and `KEY` with the phone key.
 
 ## 1. When a strength workout ends

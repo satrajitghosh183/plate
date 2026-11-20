@@ -30,6 +30,6 @@ services:
       - key: APP_URL
         value: https://plate.vercel.app
       - key: PUBLIC_URL
-        value: https://plate-api.onrender.com
+        value: https://plate-api-acbv.onrender.com
       - key: RUST_LOG
         value: info,tower_http=info,sqlx=warn

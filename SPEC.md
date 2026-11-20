@@ -258,7 +258,7 @@ Motion follows the prototype: only movement and fades, never animated blur. iPho
 
 1. **Neon.** Create a free project and copy its connection string (with `sslmode=require`).
 2. **Render.** New › Blueprint › this repository. Fill in `DATABASE_URL`, `APP_URL` (your Vercel address), `PUBLIC_URL` (the Render address) and a long `SETUP_CODE`. `TOKEN_KEY` is generated for you.
-3. **Vercel.** Run `npx vercel login` once on this Mac, then `BACKEND_URL=https://plate-api.onrender.com ./scripts/deploy-web.sh`. Name the project `plate` and keep it: your passkey is tied to its address.
+3. **Vercel.** Run `npx vercel login` once on this Mac, then `BACKEND_URL=https://plate-api-acbv.onrender.com ./scripts/deploy-web.sh`. Name the project `plate` and keep it: your passkey is tied to its address.
 4. **GitHub.** The repository is `satrajitghosh183/plate` (private). Render deploys the backend from it on every push to `main`.
 5. **Phone.** Open the app, enter the setup code, save the passkey. Then run `scripts/plate.sh phone-key` and build the two automations in `shortcuts/README.md`.
 6. **Muse.** Run `scripts/plate.sh agent add Muse` and give Muse the link.
