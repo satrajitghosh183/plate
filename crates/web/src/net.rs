@@ -63,11 +63,15 @@ async fn send(method: &str, path: &str, body: Option<String>) -> Result<(u16, St
     let resp: Response = JsFuture::from(window.fetch_with_request(&req)).await.map_err(|_| NetError::Unreachable)?.dyn_into().map_err(|_| NetError::Unreachable)?;
     let status = resp.status();
     let is_json = resp.headers().get("content-type").ok().flatten().is_some_and(|c| c.contains("json"));
+    // Vercel's own errors (a deployment without the rewrite, a timeout while Render wakes)
+    // carry this header and a JSON body of a different shape. They are not Plate saying no.
+    let platform_error = resp.headers().get("x-vercel-error").ok().flatten().is_some();
     let text = match resp.text() {
         Ok(p) => JsFuture::from(p).await.ok().and_then(|v| v.as_string()).unwrap_or_default(),
         Err(_) => String::new(),
     };
     match status {
+        _ if platform_error => Err(NetError::Unreachable),
         401 => Err(NetError::Unauthorized),
         502..=504 => Err(NetError::Unreachable),
         200..=299 if status != 204 && !is_json && !text.is_empty() => Err(NetError::Unreachable),
