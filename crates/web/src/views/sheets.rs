@@ -515,6 +515,8 @@ fn SettingsSheet() -> impl IntoView {
         spawn_local(async move {
             let _ = net::call::<()>("POST", "/api/auth/logout", None).await;
             forget("gym.cache");
+            forget("gym.session");
+            forget("gym.outbox");
             c.data.set(None);
             c.sheet.set(None);
             c.tab.set(Tab::Today);

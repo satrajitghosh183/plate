@@ -49,7 +49,7 @@ pub async fn build_state(cfg: Config) -> anyhow::Result<AppState> {
     }
     let webauthn = builder.build()?;
     let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).user_agent(concat!("plate/", env!("CARGO_PKG_VERSION"))).build()?;
-    Ok(AppState { db, cfg: Arc::new(cfg), webauthn: Arc::new(webauthn), catalogue: Arc::new(load_catalogue()), http, limiter: Arc::new(RateLimiter::new(120)), throttle: Arc::new(RateLimiter::new(30)) })
+    Ok(AppState { db, cfg: Arc::new(cfg), webauthn: Arc::new(webauthn), catalogue: Arc::new(load_catalogue()), http, limiter: Arc::new(RateLimiter::new(120)), throttle: Arc::new(RateLimiter::new(30)), throttle_all: Arc::new(RateLimiter::new(300)), throttle_mcp: Arc::new(RateLimiter::new(240)) })
 }
 
 pub fn router(st: AppState) -> Router {
@@ -101,8 +101,12 @@ pub fn router(st: AppState) -> Router {
                 .route("/ingest/workout-ended", post(ingest::workout_ended))
                 .layer(axum::middleware::from_fn_with_state(st.clone(), auth::throttle)),
         )
-        .route("/mcp", post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed))
-        .route("/mcp/{key}", post(mcp::post_with_key).get(mcp::not_allowed).delete(mcp::not_allowed));
+        .merge(
+            Router::new()
+                .route("/mcp", post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed))
+                .route("/mcp/{key}", post(mcp::post_with_key).get(mcp::not_allowed).delete(mcp::not_allowed))
+                .layer(axum::middleware::from_fn_with_state(st.clone(), auth::throttle)),
+        );
 
     if let Some(dir) = st.cfg.static_dir.clone() {
         let index = format!("{dir}/index.html");
@@ -117,8 +121,18 @@ pub fn router(st: AppState) -> Router {
         .layer(SetResponseHeaderLayer::if_not_present(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY")))
         .layer(SetResponseHeaderLayer::if_not_present(HeaderName::from_static("permissions-policy"), HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=()")))
         .layer(SetResponseHeaderLayer::if_not_present(header::STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=63072000; includeSubDomains")))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|req: &axum::http::Request<axum::body::Body>| {
+            tracing::debug_span!("request", method = %req.method(), path = %log_path(req.uri().path()))
+        }))
         .with_state(st)
+}
+
+/// The path as it may appear in logs: an agent link carries its key, so that part is hidden.
+pub fn log_path(path: &str) -> String {
+    match path.strip_prefix("/mcp/") {
+        Some(rest) if !rest.is_empty() => "/mcp/[key]".to_string(),
+        _ => path.to_string(),
+    }
 }
 
 /// Close idle sessions and apply waiting agent changes every few minutes.

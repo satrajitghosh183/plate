@@ -63,7 +63,11 @@ self.addEventListener("fetch", (event) => {
   if (req.mode === "navigate") {
     event.respondWith(
       Promise.race([fetch(req), timeout(3500)])
-        .then((res) => { if (res.ok) caches.open(SHELL).then((c) => c.put("/index.html", res.clone())); return res; })
+        .then((res) => {
+          const app = url.pathname === "/" || url.pathname === "/index.html";
+          if (res.ok && app) caches.open(SHELL).then((c) => c.put("/index.html", res.clone()));
+          return res;
+        })
         .catch(() => caches.match("/index.html").then((r) => r || caches.match("/")))
     );
     return;

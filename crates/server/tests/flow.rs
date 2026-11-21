@@ -798,3 +798,134 @@ async fn the_phone_key_never_reaches_the_logs() {
     assert!(!logs.contains(&k[6..]), "the key appeared in the logs");
     t.done().await;
 }
+
+// ---------- hardening from the security audit ----------
+
+async fn send(t: &T, method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> (StatusCode, Value) {
+    let mut b = Request::builder().method(method).uri(path);
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    let res = t.app.clone().oneshot(b.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into())))
+}
+
+#[tokio::test]
+async fn forged_addresses_cannot_multiply_sign_in_guesses() {
+    let t = T::new().await;
+    let mut limited_at = None;
+    for i in 0..400u32 {
+        let ip = format!("198.51.{}.{}", i / 250, i % 250);
+        let (s, _) = send(&t, "POST", "/api/auth/password", &[("x-forwarded-for", &ip), ("content-type", "application/json"), ("origin", ORIGIN)], r#"{"email":"a@b.c","password":"wrong-guess-123"}"#).await;
+        if s == StatusCode::TOO_MANY_REQUESTS {
+            limited_at = Some(i);
+            break;
+        }
+    }
+    let n = limited_at.expect("a new forged address per request must still hit the total limit");
+    assert!(n <= 300, "limited only after {n} guesses");
+    // Junk in the header shares one bucket instead of minting new ones.
+    let t = T::new().await;
+    let mut junk_limited = false;
+    for i in 0..40 {
+        let (s, _) = send(&t, "POST", "/api/auth/password", &[("x-forwarded-for", &format!("not-an-ip-{i}")), ("content-type", "application/json"), ("origin", ORIGIN)], "{}").await;
+        junk_limited |= s == StatusCode::TOO_MANY_REQUESTS;
+    }
+    assert!(junk_limited, "unparseable addresses must share a bucket");
+    t.done().await;
+}
+
+#[tokio::test]
+async fn staying_signed_in_is_never_throttled() {
+    let t = T::new().await;
+    for i in 0..60 {
+        let (s, _) = send(&t, "GET", "/api/auth/status", &[("x-forwarded-for", "203.0.113.9")], "").await;
+        assert_eq!(s, StatusCode::OK, "status call {i}");
+    }
+    t.done().await;
+}
+
+#[tokio::test]
+async fn agent_keys_never_reach_the_logs() {
+    assert_eq!(gym_server::log_path("/mcp/agent_secretsecret"), "/mcp/[key]");
+    assert_eq!(gym_server::log_path("/mcp"), "/mcp");
+    assert_eq!(gym_server::log_path("/api/bootstrap"), "/api/bootstrap");
+    // And at every level, through the real router.
+    let t = T::new().await;
+    let a = t.agent("Muse").await;
+    let buf = Captured::default();
+    let w = buf.clone();
+    let sub = tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_ansi(false).with_writer(move || w.clone()).finish();
+    let guard = tracing::subscriber::set_default(sub);
+    t.mcp(&a.key, "tools/list", json!({})).await;
+    drop(guard);
+    let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("/mcp/[key]"), "the request was traced:\n{logs}");
+    assert!(!logs.contains(&a.key), "the agent key appeared in the logs");
+    t.done().await;
+}
+
+#[tokio::test]
+async fn a_batch_cannot_smuggle_many_calls() {
+    let t = T::new().await;
+    let a = t.agent("Muse").await;
+    let many: Vec<Value> = (0..11).map(|i| json!({ "jsonrpc": "2.0", "id": i, "method": "tools/list", "params": {} })).collect();
+    let (s, v) = t.req("POST", &format!("/mcp/{}", a.key), Auth::None, Some(Value::Array(many))).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let few: Vec<Value> = (0..3).map(|i| json!({ "jsonrpc": "2.0", "id": i, "method": "tools/list", "params": {} })).collect();
+    let (s, v) = t.req("POST", &format!("/mcp/{}", a.key), Auth::None, Some(Value::Array(few))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    t.done().await;
+}
+
+#[tokio::test]
+async fn revoking_an_agent_drops_what_it_left_waiting() {
+    let t = T::new().await;
+    with_session(&t).await;
+    let a = t.agent("Muse").await;
+    let out = t.tool(&a.key, "add_lift", json!({ "name": "Zercher squat", "sets": 3, "reps": 6, "weight": 60 })).await;
+    let text = out.to_string();
+    assert!(text.contains("queued"), "a plan change waits while a session is open: {text}");
+    let n = gym_server::admin::revoke_agent(&t.st.db, "Muse").await.unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(t.count("select count(*) from activity where status in ('queued', 'proposed')").await, 0);
+    assert_eq!(t.count("select count(*) from activity where status = 'declined'").await, 1);
+    // Ending the session applies nothing from the revoked agent.
+    gym_server::ops::flush_queued(&t.st.db, &t.st.catalogue, Utc::now().date_naive()).await.unwrap();
+    assert_eq!(t.count("select count(*) from lifts where lower(name) = 'zercher squat'").await, 0);
+    t.done().await;
+}
+
+#[tokio::test]
+async fn invalid_or_huge_changes_are_refused_before_they_wait() {
+    let t = T::new().await;
+    with_session(&t).await;
+    let a = t.agent("Muse").await;
+    // Invalid (a bad split) while a session is open: refused now, not stored to fail later.
+    let bad = json!({ "split": { "key": "x", "name": "Bad", "summary": "", "days": [] } });
+    let (_, v) = t.mcp(&a.key, "tools/call", json!({ "name": "switch_split", "arguments": bad })).await;
+    assert!(v.to_string().contains("at least one day"), "{v}");
+    // Valid in shape but impossible (the lift exists already): only trying it shows that.
+    // Without the dry run it would sit in the queue and fail when the session ends.
+    let (_, v) = t.mcp(&a.key, "tools/call", json!({ "name": "add_lift", "arguments": { "name": "Bench press", "sets": 5, "reps": 5, "weight": 80 } })).await;
+    assert_eq!(v["result"]["isError"], true, "a duplicate lift must be refused, not queued: {v}");
+    // Huge: refused outright.
+    let (_, v) = t.mcp(&a.key, "tools/call", json!({ "name": "add_lift", "arguments": { "name": "x".repeat(70_000), "sets": 3, "reps": 5, "weight": 20 } })).await;
+    assert!(v.to_string().contains("too large"), "{v}");
+    assert_eq!(t.count("select count(*) from activity").await, 0, "nothing was stored");
+    t.done().await;
+}
+
+#[tokio::test]
+async fn the_backup_holds_every_session() {
+    let t = T::new().await;
+    sqlx::query("insert into workout_sessions (id, started_at, closed_at, close_reason, day_name) select gen_random_uuid(), now() - (g || ' days')::interval, now() - (g || ' days')::interval + interval '1 hour', 'tap', 'Push' from generate_series(1, 230) g")
+        .execute(&t.st.db)
+        .await
+        .unwrap();
+    let v = t.ok("GET", "/api/export", None).await;
+    assert_eq!(v["sessions"].as_array().map(|a| a.len()), Some(230));
+    t.done().await;
+}

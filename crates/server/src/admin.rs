@@ -104,8 +104,11 @@ pub async fn list_agents(db: &PgPool) -> anyhow::Result<Vec<AgentRow>> {
 }
 
 pub async fn revoke_agent(db: &PgPool, name: &str) -> anyhow::Result<u64> {
-    let done = sqlx::query("update agents set revoked_at = now() where lower(name) = lower($1) and revoked_at is null").bind(name.trim()).execute(db).await?;
-    Ok(done.rows_affected())
+    let ids: Vec<(Uuid,)> = sqlx::query_as("update agents set revoked_at = now() where lower(name) = lower($1) and revoked_at is null returning id").bind(name.trim()).fetch_all(db).await?;
+    for (id,) in &ids {
+        crate::store::decline_waiting_from(db, *id).await.map_err(|e| anyhow!(e.message()))?;
+    }
+    Ok(ids.len() as u64)
 }
 
 fn env(name: &str) -> anyhow::Result<String> {

@@ -489,11 +489,26 @@ pub async fn open_session(c: &mut PgConnection) -> AppResult<Option<Session>> {
     }
 }
 
+/// A revoked agent's queued and proposed changes must never apply later.
+pub async fn decline_waiting_from(db: &sqlx::PgPool, agent: Uuid) -> AppResult<u64> {
+    let r = sqlx::query("update activity set status = 'declined', resolved_at = now() where agent_id = $1 and status in ('queued', 'proposed')").bind(agent).execute(db).await?;
+    Ok(r.rows_affected())
+}
+
 pub async fn recent_sessions(c: &mut PgConnection, limit: i64, before: Option<DateTime<Utc>>) -> AppResult<Vec<Session>> {
+    sessions_page(c, limit.clamp(1, 200), before).await
+}
+
+/// Every finished session, for the backup export.
+pub async fn all_sessions(c: &mut PgConnection) -> AppResult<Vec<Session>> {
+    sessions_page(c, i64::MAX, None).await
+}
+
+async fn sessions_page(c: &mut PgConnection, limit: i64, before: Option<DateTime<Utc>>) -> AppResult<Vec<Session>> {
     let sql = format!(
         "select {SESSION_COLS} from workout_sessions where closed_at is not null and ($2::timestamptz is null or started_at < $2) order by started_at desc limit $1"
     );
-    let rows: Vec<SessionRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(limit.clamp(1, 200)).bind(before).fetch_all(&mut *c).await?;
+    let rows: Vec<SessionRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(limit).bind(before).fetch_all(&mut *c).await?;
     hydrate(c, rows).await
 }
 

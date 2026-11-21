@@ -359,6 +359,7 @@ pub async fn patch_agent(_: Owner, State(st): State<AppState>, Path(id): Path<Uu
     }
     if b.revoke == Some(true) {
         sqlx::query("update agents set revoked_at = coalesce(revoked_at, now()) where id = $1").bind(id).execute(&st.db).await?;
+        store::decline_waiting_from(&st.db, id).await?;
     }
     let row: AgentRow = sqlx::query_as("select id, name, key_prefix, created_at, last_used_at, ask_first, revoked_at from agents where id = $1")
         .bind(id)
@@ -390,7 +391,7 @@ pub async fn activity_action(_: Owner, State(st): State<AppState>, Query(tz): Qu
 pub async fn export(_: Owner, State(st): State<AppState>) -> AppResult<impl IntoResponse> {
     let mut c = st.db.acquire().await?;
     let lifts = store::list_lifts(&mut c, true).await?;
-    let sessions = store::recent_sessions(&mut c, 200_000, None).await?;
+    let sessions = store::all_sessions(&mut c).await?;
     let open = store::open_session(&mut c).await?;
     let health = store::health_days(&mut c, NaiveDate::from_ymd_opt(2000, 1, 1).expect("date"), NaiveDate::from_ymd_opt(2100, 1, 1).expect("date")).await?;
     let plans: Vec<(Uuid, chrono::DateTime<Utc>, String, SqlJson<serde_json::Value>)> =

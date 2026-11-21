@@ -90,6 +90,9 @@ impl Split {
         if self.name.trim().is_empty() {
             return Err("The split needs a name".into());
         }
+        if self.name.len() > 60 || self.key.len() > 40 || self.summary.len() > 200 {
+            return Err("The split's key, name or summary is too long".into());
+        }
         if self.days.is_empty() {
             return Err("A split needs at least one day".into());
         }
@@ -99,6 +102,9 @@ impl Split {
         for d in &self.days {
             if d.name.trim().is_empty() {
                 return Err("Every day needs a name".into());
+            }
+            if d.name.len() > 40 {
+                return Err("A day's name can be at most 40 characters".into());
             }
             if d.weekday > 6 {
                 return Err(format!("{}: weekday must be 0 (Monday) to 6 (Sunday)", d.name));

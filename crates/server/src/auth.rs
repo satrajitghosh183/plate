@@ -516,26 +516,44 @@ impl FromRequestParts<AppState> for Ingest {
     }
 }
 
-/// Slow down guessing: sign-in and the phone's intake allow 30 requests a minute per
-/// address. Behind Render's proxy the caller's address is the first X-Forwarded-For entry.
+/// The caller's address for rate limits: the first X-Forwarded-For entry if it is a real
+/// IP address (behind Render that is the client, or Vercel's view of it), else the socket.
+/// Anything that does not parse shares one bucket, so junk values cannot mint new ones.
+pub fn caller_ip(req: &axum::extract::Request) -> String {
+    let forwarded = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.split(',').next()).map(str::trim);
+    match forwarded {
+        Some(v) => v.parse::<std::net::IpAddr>().map(|ip| ip.to_string()).unwrap_or_else(|_| "unparsed".into()),
+        None => req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip().to_string()).unwrap_or_else(|| "unknown".into()),
+    }
+}
+
+/// Slow down guessing on sign-in, the phone's intake and the agent link: a limit per
+/// address, plus a total per path group that a forged address cannot get around.
+/// `/api/auth/status` is left out: it guesses nothing, and the app needs it to stay signed in.
 pub async fn throttle(State(st): State<AppState>, req: axum::extract::Request, next: Next) -> Response {
     // Inside the nested /api router the path has lost its prefix; use the original.
     let path = req.extensions().get::<axum::extract::OriginalUri>().map(|u| u.0.path().to_string()).unwrap_or_else(|| req.uri().path().to_string());
     let path = path.as_str();
-    let guarded = path.starts_with("/api/auth/") || path.starts_with("/ingest/");
-    if guarded {
-        let ip = req
-            .headers()
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .map(|v| v.trim().to_string())
-            .or_else(|| req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|c| c.0.ip().to_string()))
-            .unwrap_or_else(|| "unknown".into());
-        let bucket = if path.starts_with("/ingest/") { "ingest" } else { "auth" };
-        if !st.throttle.allow(format!("{bucket}:{ip}")) {
+    let bucket = if path == "/api/auth/status" {
+        None
+    } else if path.starts_with("/api/auth/") {
+        Some("auth")
+    } else if path.starts_with("/ingest/") {
+        Some("ingest")
+    } else if path == "/mcp" || path.starts_with("/mcp/") {
+        Some("mcp")
+    } else {
+        None
+    };
+    if let Some(bucket) = bucket {
+        let ip = caller_ip(&req);
+        // Agents make many calls (each agent also has its own 120 a minute once its key
+        // checks out), so the link gets a larger per-address allowance than sign-in.
+        let per_ip = if bucket == "mcp" { &st.throttle_mcp } else { &st.throttle };
+        if !per_ip.allow(format!("{bucket}:{ip}")) || !st.throttle_all.allow(bucket) {
             return AppError::TooMany.into_response();
         }
     }
     next.run(req).await
 }
+

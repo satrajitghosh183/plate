@@ -27,6 +27,9 @@ use crate::ops::{self, Actor, Op, WritePlan};
 use crate::state::AppState;
 use crate::store::{self, local_date};
 
+/// Most messages one batched request may carry.
+const MAX_BATCH: usize = 10;
+
 /// Only revisions whose text was read; anything else gets the fallback and the client decides.
 const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const FALLBACK_VERSION: &str = "2025-06-18";
@@ -76,6 +79,10 @@ async fn handle(st: AppState, headers: HeaderMap, path_key: Option<String>, body
     };
     // Batches were dropped from the protocol, but answer them anyway.
     if let Value::Array(items) = msg {
+        // One request is one rate-limit hit, so a batch may not smuggle in thousands of calls.
+        if items.len() > MAX_BATCH {
+            return (StatusCode::BAD_REQUEST, Json(rpc_error(Value::Null, -32600, &format!("Send at most {MAX_BATCH} messages in one batch")))).into_response();
+        }
         let mut out = Vec::new();
         for item in items {
             if let Some(r) = one(&st, &agent, item).await {

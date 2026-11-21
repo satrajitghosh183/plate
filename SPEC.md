@@ -259,7 +259,7 @@ Motion follows the prototype: only movement and fades, never animated blur. iPho
 4. **GitHub.** The repository is `satrajitghosh183/plate` (private). Render deploys the backend from it on every push to `main`.
 5. **Phone.** Open the app, enter the setup code, save the passkey. Then run `scripts/plate.sh phone-key` and build the two automations in `shortcuts/README.md`.
 6. **Muse.** Run `scripts/plate.sh agent add Muse` and give Muse the link.
-7. **Phase 0.** Open `/phase0.html` from the Home Screen app and record the results here.
+7. **Phase 0.** Test at the gym from the Home Screen app (sign-in, offline sets, clips, watch close, evening totals) and record the results here.
 8. **Spotify** (only if you pay for Premium): create the developer app, put its id and secret in `.env`, and run `scripts/plate.sh authorize spotify`.
 
 **Signing in.** Three ways, all switched on from the server: a passkey (Face ID or Touch ID, synced by iCloud Keychain), your email and password (`plate login email you@…`, then `plate login password`; stored as an Argon2id hash), and Google (`plate login google`, which only accepts a verified Google account with your email). "Sign in with Apple" itself needs a paid Apple developer account, so it is left out. A sign-in lasts 400 days and renews every time the app opens. Without one, every data route answers 401. `plate logout-everywhere` signs out every device.

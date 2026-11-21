@@ -507,7 +507,28 @@ pub async fn submit(db: &PgPool, actor: &Actor, op: Op, cat: &Catalogue, today: 
     Ok(out)
 }
 
+/// The most a single change may weigh when stored as JSON. A whole plan of 60 lifts with
+/// cues is well under this.
+const MAX_OP_BYTES: usize = 64 * 1024;
+
+/// Try a change in a savepoint and roll it back: anything invalid is refused now, before it
+/// is stored as a proposal or a queued change.
+async fn dry_run(c: &mut PgConnection, actor: &Actor, op: &Op, cat: &Catalogue, today: NaiveDate) -> AppResult<()> {
+    let mut sp = sqlx::Acquire::begin(&mut *c).await?;
+    let result = apply(&mut sp, op, actor, cat, today).await;
+    sp.rollback().await?;
+    result.map(|_| ())
+}
+
 async fn submit_in(c: &mut PgConnection, actor: &Actor, op: Op, cat: &Catalogue, today: NaiveDate, accepted: bool) -> AppResult<Outcome> {
+    if matches!(actor, Actor::Agent { .. }) && serde_json::to_vec(&op).map(|v| v.len()).unwrap_or(usize::MAX) > MAX_OP_BYTES {
+        return Err(crate::error::bad("That change is too large. Send smaller pieces"));
+    }
+    let waits = matches!(actor, Actor::Agent { ask_first: true, .. }) && !accepted
+        || matches!(actor, Actor::Agent { .. }) && op.touches_plan() && store::open_session(c).await?.is_some();
+    if waits {
+        dry_run(c, actor, &op, cat, today).await?;
+    }
     if let Actor::Agent { ask_first: true, .. } = actor
         && !accepted
     {
