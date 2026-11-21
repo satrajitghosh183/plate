@@ -1,18 +1,16 @@
-//! Strava (display only) and Spotify (remote control).
+//! Spotify (remote control).
 //!
-//! Both are connected on the server, never from the app: `plate authorize strava|spotify`
-//! runs the sign-in on your own computer and stores the app credentials and tokens in the
-//! database, encrypted with TOKEN_KEY. They are never sent to the app or to agents. Neither provider is reachable from the agent
-//! link: Strava's API terms forbid AI use, and Spotify's forbid feeding its content
-//! to a model.
+//! Connected on the server, never from the app: `plate authorize spotify` runs the sign-in
+//! on your own computer and stores the app credentials and tokens in the database,
+//! encrypted with TOKEN_KEY. They are never sent to the app or to agents, and Spotify is not
+//! reachable from the agent link: its terms forbid feeding its content to a model.
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
-use gym_core::api::{Connections, MusicCommand, NowPlaying, Playlist, ProviderStatus, StravaActivity};
+use gym_core::api::{Connections, MusicCommand, NowPlaying, Playlist, ProviderStatus};
 use serde::{Deserialize, Serialize};
-use sqlx::types::Json as SqlJson;
 
 use crate::auth::Owner;
 use crate::config::ProviderApp;
@@ -23,21 +21,18 @@ use crate::store;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
-    Strava,
     Spotify,
 }
 
 impl Provider {
     pub fn key(self) -> &'static str {
         match self {
-            Provider::Strava => "strava",
             Provider::Spotify => "spotify",
         }
     }
 
     pub fn parse(s: &str) -> Option<Provider> {
         match s {
-            "strava" => Some(Provider::Strava),
             "spotify" => Some(Provider::Spotify),
             _ => None,
         }
@@ -45,7 +40,6 @@ impl Provider {
 
     pub fn label(self) -> &'static str {
         match self {
-            Provider::Strava => "Strava",
             Provider::Spotify => "Spotify",
         }
     }
@@ -53,8 +47,6 @@ impl Provider {
     /// Where the provider sends the browser back to during `plate authorize`.
     pub fn local_redirect(self) -> &'static str {
         match self {
-            // Strava checks only the host against the app's "Authorization Callback Domain".
-            Provider::Strava => "http://localhost:8765/callback",
             // Spotify needs this exact address in the app's Redirect URIs (loopback, not "localhost").
             Provider::Spotify => "http://127.0.0.1:8765/callback",
         }
@@ -62,13 +54,9 @@ impl Provider {
 
     pub fn authorize_url(self, client_id: &str, state: &str) -> String {
         let (base, scope) = match self {
-            Provider::Strava => ("https://www.strava.com/oauth/authorize", "activity:read_all"),
             Provider::Spotify => ("https://accounts.spotify.com/authorize", "user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private"),
         };
-        let mut params = vec![("client_id", client_id), ("redirect_uri", self.local_redirect()), ("response_type", "code"), ("scope", scope), ("state", state)];
-        if self == Provider::Strava {
-            params.push(("approval_prompt", "auto"));
-        }
+        let params = [("client_id", client_id), ("redirect_uri", self.local_redirect()), ("response_type", "code"), ("scope", scope), ("state", state)];
         url::Url::parse_with_params(base, &params).map(|u| u.to_string()).unwrap_or_default()
     }
 }
@@ -130,8 +118,6 @@ pub struct TokenReply {
     pub expires_in: Option<i64>,
     #[serde(default)]
     pub expires_at: Option<i64>,
-    #[serde(default)]
-    pub athlete: Option<serde_json::Value>,
 }
 
 impl TokenReply {
@@ -150,7 +136,6 @@ fn app_for(st: &AppState, p: Provider, t: &Tokens) -> AppResult<ProviderApp> {
         return Ok(ProviderApp { client_id: id.clone(), client_secret: secret.clone() });
     }
     let env = match p {
-        Provider::Strava => st.cfg.strava.clone(),
         Provider::Spotify => st.cfg.spotify.clone(),
     };
     env.ok_or_else(|| AppError::Unavailable(format!("{} has no app id and secret. Run plate authorize {} again", p.label(), p.key())))
@@ -158,12 +143,6 @@ fn app_for(st: &AppState, p: Provider, t: &Tokens) -> AppResult<ProviderApp> {
 
 pub async fn token_request(http: &reqwest::Client, p: Provider, app: &ProviderApp, form: &[(&str, &str)]) -> AppResult<TokenReply> {
     let req = match p {
-        Provider::Strava => {
-            let mut f: Vec<(&str, &str)> = form.to_vec();
-            f.push(("client_id", &app.client_id));
-            f.push(("client_secret", &app.client_secret));
-            http.post("https://www.strava.com/oauth/token").form(&f)
-        }
         Provider::Spotify => http.post("https://accounts.spotify.com/api/token").basic_auth(&app.client_id, Some(&app.client_secret)).form(form),
     };
     let res = req.send().await.map_err(|e| AppError::Upstream(format!("{} did not answer: {e}", p.label())))?;
@@ -197,7 +176,6 @@ pub async fn connections(st: &AppState) -> AppResult<Connections> {
             // Spotify refresh tokens stop working six months after sign-in.
             (Provider::Spotify, Some((_, _, at))) if Utc::now() - *at > Duration::days(165) => Some("Run plate authorize spotify again soon: Spotify sign-ins last six months".into()),
             (Provider::Spotify, Some(_)) => Some("Needs Spotify Premium and the Spotify app opened once".into()),
-            (Provider::Strava, Some(_)) => Some("Shown here only. Never sent to agents. Kept 7 days".into()),
             _ => None,
         };
         ProviderStatus { configured: configured || row.is_some(), connected: row.is_some() && st.cfg.token_key.is_some(), account: row.and_then(|r| r.1.clone()), detail }
@@ -207,111 +185,12 @@ pub async fn connections(st: &AppState) -> AppResult<Connections> {
     Ok(Connections {
         health_last_delivery: store::health_last_delivery(&mut c).await?,
         health_key_set: key_set.is_some(),
-        strava: status(Provider::Strava, st.cfg.strava.is_some()),
         spotify: status(Provider::Spotify, st.cfg.spotify.is_some()),
     })
 }
 
 pub async fn connections_route(_: Owner, State(st): State<AppState>) -> AppResult<Json<Connections>> {
     Ok(Json(connections(&st).await?))
-}
-
-// ---------- Strava ----------
-
-/// Drop anything older than Strava's seven-day limit, then fetch the last week.
-pub async fn refresh_strava(st: &AppState) -> AppResult<()> {
-    sqlx::query("delete from strava_activities where fetched_at < now() - interval '7 days' or start_at < now() - interval '7 days'").execute(&st.db).await?;
-    let token = access(st, Provider::Strava).await?;
-    let after = (Utc::now() - Duration::days(7)).timestamp().to_string();
-    let res = st
-        .http
-        .get("https://www.strava.com/api/v3/athlete/activities")
-        .bearer_auth(token)
-        .query(&[("after", after.as_str()), ("per_page", "30")])
-        .send()
-        .await
-        .map_err(|e| AppError::Upstream(format!("Strava did not answer: {e}")))?;
-    if !res.status().is_success() {
-        return Err(AppError::Upstream(format!("Strava said {}", res.status())));
-    }
-    let list: Vec<serde_json::Value> = res.json().await.map_err(|e| AppError::Upstream(format!("Strava sent an unexpected reply: {e}")))?;
-    for a in list {
-        let (Some(id), Some(start)) = (a["id"].as_i64(), a["start_date"].as_str().and_then(|s| DateTime::parse_from_rfc3339(s).ok())) else { continue };
-        let keep = serde_json::json!({
-            "name": a["name"], "sport": a["sport_type"].as_str().or(a["type"].as_str()), "distance": a["distance"], "moving_time": a["moving_time"],
-        });
-        sqlx::query("insert into strava_activities (id, data, start_at, fetched_at) values ($1, $2, $3, now()) on conflict (id) do update set data = excluded.data, fetched_at = now()")
-            .bind(id)
-            .bind(SqlJson(keep))
-            .bind(start.with_timezone(&Utc))
-            .execute(&st.db)
-            .await?;
-    }
-    sqlx::query("update provider_tokens set updated_at = now() where provider = 'strava'").execute(&st.db).await?;
-    Ok(())
-}
-
-pub async fn strava_activities(_: Owner, State(st): State<AppState>) -> AppResult<Json<Vec<StravaActivity>>> {
-    // max() of an empty table is one row holding NULL.
-    let (last,): (Option<DateTime<Utc>>,) = sqlx::query_as("select max(fetched_at) from strava_activities").fetch_one(&st.db).await?;
-    if last.is_none_or(|t| Utc::now() - t > Duration::minutes(30))
-        && let Err(e) = refresh_strava(&st).await
-    {
-        tracing::warn!(error = %e, "strava refresh failed");
-    }
-    sqlx::query("delete from strava_activities where fetched_at < now() - interval '7 days' or start_at < now() - interval '7 days'").execute(&st.db).await?;
-    let rows: Vec<(i64, SqlJson<serde_json::Value>, DateTime<Utc>)> = sqlx::query_as("select id, data, start_at from strava_activities order by start_at desc").fetch_all(&st.db).await?;
-    Ok(Json(
-        rows.into_iter()
-            .map(|(id, SqlJson(d), start)| StravaActivity {
-                id,
-                name: d["name"].as_str().unwrap_or("Activity").to_string(),
-                sport: d["sport"].as_str().unwrap_or("Workout").to_string(),
-                start,
-                distance_km: d["distance"].as_f64().unwrap_or(0.0) / 1000.0,
-                moving_min: d["moving_time"].as_f64().unwrap_or(0.0) / 60.0,
-            })
-            .collect(),
-    ))
-}
-
-#[derive(Deserialize)]
-pub struct HubVerify {
-    #[serde(rename = "hub.mode")]
-    mode: Option<String>,
-    #[serde(rename = "hub.verify_token")]
-    verify_token: Option<String>,
-    #[serde(rename = "hub.challenge")]
-    challenge: Option<String>,
-}
-
-/// Strava checks the webhook address once when the subscription is created.
-pub async fn strava_webhook_verify(State(st): State<AppState>, Query(q): Query<HubVerify>) -> AppResult<Json<serde_json::Value>> {
-    let expected = st.cfg.strava_verify_token.as_deref().ok_or_else(|| AppError::Unavailable("STRAVA_VERIFY_TOKEN is not set".into()))?;
-    if q.mode.as_deref() != Some("subscribe") || !crate::crypto::constant_time_eq(q.verify_token.as_deref().unwrap_or(""), expected) {
-        return Err(AppError::Forbidden("Wrong verify token".into()));
-    }
-    Ok(Json(serde_json::json!({ "hub.challenge": q.challenge.unwrap_or_default() })))
-}
-
-/// A Strava event: refetch the week (or drop a deleted activity). Always answers 200 quickly.
-pub async fn strava_webhook(State(st): State<AppState>, Json(ev): Json<serde_json::Value>) -> StatusCode {
-    if ev["object_type"] == "activity" && ev["aspect_type"] == "delete" {
-        if let Some(id) = ev["object_id"].as_i64() {
-            let _ = sqlx::query("delete from strava_activities where id = $1").bind(id).execute(&st.db).await;
-        }
-    } else if ev["object_type"] == "athlete" && ev["updates"]["authorized"] == "false" {
-        let _ = sqlx::query("delete from provider_tokens where provider = 'strava'").execute(&st.db).await;
-        let _ = sqlx::query("delete from strava_activities").execute(&st.db).await;
-    } else {
-        let st2 = st.clone();
-        tokio::spawn(async move {
-            if let Err(e) = refresh_strava(&st2).await {
-                tracing::warn!(error = %e, "strava refresh after webhook failed");
-            }
-        });
-    }
-    StatusCode::OK
 }
 
 // ---------- Spotify ----------

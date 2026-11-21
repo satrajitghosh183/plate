@@ -14,12 +14,12 @@ workout ends. It runs on free plans only.
 | Path | What |
 |---|---|
 | `crates/core` | Rules shared by both sides: lift sorting, split dealing, plates, sessions, the API types |
-| `crates/server` | Axum backend: passkeys, the app API, health intake, the agent link (MCP), Strava, Spotify |
+| `crates/server` | Axum backend: passkeys, the app API, health intake, the agent link (MCP), Spotify |
 | `crates/web` | Leptos phone app, compiled to WebAssembly |
 | `web/static` | Page, styles, service worker, manifest, icons, the Phase 0 test page |
 | `data/catalogue` | Public-domain exercise catalogue (free-exercise-db) |
 | `deploy`, `render.yaml` | Vercel and Render settings |
-| `scripts` | `plate.sh` (connect things: phone key, agent links, Strava, Spotify), `check.sh` (all tests and lints), `build-web.sh`, `deploy-web.sh` (publish to Vercel) |
+| `scripts` | `plate.sh` (connect things: phone key, agent links, Spotify), `check.sh` (all tests and lints), `build-web.sh`, `deploy-web.sh` (publish to Vercel) |
 
 ## Run it locally
 
@@ -49,17 +49,17 @@ holding the same `DATABASE_URL` and `TOKEN_KEY` as Render:
 scripts/plate.sh status               # what is connected
 scripts/plate.sh phone-key            # key for the iPhone's Apple Health shortcuts (Lifesum rides along)
 scripts/plate.sh agent add Muse       # Muse's link, shown once; also: agent list, agent revoke Muse
-scripts/plate.sh authorize strava     # browser sign-in; tokens stored encrypted in the database
-scripts/plate.sh authorize spotify
+scripts/plate.sh authorize spotify    # browser sign-in; tokens stored encrypted in the database
 scripts/plate.sh login email you@example.com   # the only email password and Google accept
 scripts/plate.sh login password                # typed, never shown or stored in plain text
 scripts/plate.sh login google                  # needs GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env
 scripts/plate.sh logout-everywhere
 ```
 
-For `authorize`, put the developer app's id and secret in `.env` first. Strava: any app at
-strava.com/settings/api (its callback domain may stay `localhost`). Spotify: an app at
-developer.spotify.com with the redirect URI `http://127.0.0.1:8765/callback`.
+For `authorize`, put the developer app's id and secret in `.env` first: an app at
+developer.spotify.com with the redirect URI `http://127.0.0.1:8765/callback`. Strava was
+removed: its API needs a paid subscription. Workouts recorded on the watch reach the app
+through Apple Health instead.
 
 ## Tests
 
@@ -69,7 +69,7 @@ TEST_DATABASE_URL=postgres://gym@127.0.0.1:55432/gym_test cargo test --workspace
 ```
 
 The end-to-end tests create and drop their own database for each test. They cover the rules
-that must never break: agents can't reach logged sets; no agent tool returns Strava or Spotify
+that must never break: agents can't reach logged sets; no agent tool returns Spotify
 data; the phone key can't read; a retried set is not duplicated; switching splits leaves sets
 alone; registration closes after the first passkey; a second close signal changes nothing.
 

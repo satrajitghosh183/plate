@@ -76,7 +76,6 @@ pub fn router(st: AppState) -> Router {
         .route("/activity/{id}/{action}", post(api::activity_action))
         .route("/export", get(api::export))
         .route("/connections", get(providers::connections_route))
-        .route("/strava/activities", get(providers::strava_activities))
         .route("/music/now", get(providers::now_playing))
         .route("/music/playlists", get(providers::playlists))
         .route("/music/command", post(providers::command))
@@ -103,8 +102,7 @@ pub fn router(st: AppState) -> Router {
                 .layer(axum::middleware::from_fn_with_state(st.clone(), auth::throttle)),
         )
         .route("/mcp", post(mcp::post).get(mcp::not_allowed).delete(mcp::not_allowed))
-        .route("/mcp/{key}", post(mcp::post_with_key).get(mcp::not_allowed).delete(mcp::not_allowed))
-        .route("/strava/webhook", get(providers::strava_webhook_verify).post(providers::strava_webhook));
+        .route("/mcp/{key}", post(mcp::post_with_key).get(mcp::not_allowed).delete(mcp::not_allowed));
 
     if let Some(dir) = st.cfg.static_dir.clone() {
         let index = format!("{dir}/index.html");
@@ -141,7 +139,6 @@ pub fn spawn_housekeeping(st: AppState) {
             }
             // Kept out of the phone's request path, so a cold-started call does no extra work.
             let _ = sqlx::query("delete from close_signals where received_at < now() - interval '60 days'").execute(&st.db).await;
-            let _ = sqlx::query("delete from strava_activities where fetched_at < now() - interval '7 days' or start_at < now() - interval '7 days'").execute(&st.db).await;
         }
     });
 }

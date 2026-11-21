@@ -67,7 +67,6 @@ fn Sources() -> impl IntoView {
                             <span class="meta">"Day totals only. Turn on Apple Health in Lifesum's settings"</span>
                         </span>
                     </div>
-                    <Provider name="Strava" key="strava" status=k.strava.clone() blurb="Runs and rides from the last 7 days. Never shown to agents"/>
                     <Provider name="Spotify" key="spotify" status=k.spotify.clone() blurb="Play, pause, skip and pick a playlist without leaving the app"/>
                 }
             })}
@@ -149,7 +148,7 @@ fn Agents() -> impl IntoView {
     view! {
         <div class="stack g24 fade-in">
             <div class="stack g8">
-                <p class="sub">"Each agent has its own link, made on the server. It can read your plan, sessions and food totals, and write plans, lifts and clips. It can never change a logged set, or see Strava or Spotify"</p>
+                <p class="sub">"Each agent has its own link, made on the server. It can read your plan, sessions and food totals, and write plans, lifts and clips. It can never change a logged set, or see Spotify"</p>
                 <div class="list">
                     {move || agents.get().into_iter().map(|a| {
                         let id = a.id;

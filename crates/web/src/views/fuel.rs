@@ -1,13 +1,10 @@
 //! Fuel: food from Lifesum and energy from Apple Health, as day totals. Secondary to training.
-//! Strava runs show here too, for you only.
 
 use chrono::{Datelike, Duration};
-use gym_core::api::{HealthDay, StravaActivity};
+use gym_core::api::HealthDay;
 use gym_core::units::{format_number, format_thousands};
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 
-use crate::net;
 use crate::state::{Tab, ctx};
 use crate::ui;
 
@@ -18,17 +15,6 @@ pub fn FuelPage() -> impl IntoView {
     let today = ui::today();
     let today_row = move || week().into_iter().find(|h| h.date == today).unwrap_or(HealthDay { date: today, ..Default::default() });
     let goals = move || c.data.with(|d| d.as_ref().map(|d| (d.settings.kcal_goal, d.settings.protein_goal_g)).unwrap_or((2600, 160)));
-    let runs: RwSignal<Vec<StravaActivity>> = RwSignal::new(vec![]);
-    let strava = move || c.data.with(|d| d.as_ref().is_some_and(|d| d.connections.strava.connected));
-    Effect::new(move |_| {
-        if strava() {
-            spawn_local(async move {
-                if let Ok(r) = net::get::<Vec<StravaActivity>>("/api/strava/activities").await {
-                    runs.set(r);
-                }
-            });
-        }
-    });
     let days: Vec<chrono::NaiveDate> = (0..7).rev().map(|k| today - Duration::days(k)).collect();
     let has_any = move || week().iter().any(|h| h.energy_eaten_kcal.is_some() || h.energy_burned_kcal.is_some());
 
@@ -76,19 +62,6 @@ pub fn FuelPage() -> impl IntoView {
                         </div>
                     </div>
                 }
-            })}
-            {move || (strava() && !runs.get().is_empty()).then(|| view! {
-                <div class="stack g8">
-                    <span class="meta">"Runs and rides this week · Strava, shown to you only"</span>
-                    <div class="list">
-                        {runs.get().into_iter().map(|r| view! {
-                            <div class="row">
-                                <span class="stack grow"><span class="ellipsis">{r.name.clone()}</span><span class="meta">{format!("{} · {}", r.sport, ui::day_label(ui::local(r.start).date_naive()))}</span></span>
-                                <span class="r num">{format!("{} km · {} min", format_number((r.distance_km * 10.0).round() / 10.0), r.moving_min.round())}</span>
-                            </div>
-                        }).collect_view()}
-                    </div>
-                </div>
             })}
         </div>
     }

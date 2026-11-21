@@ -16,7 +16,7 @@ pub struct Config {
     /// Where the phone app is served from, e.g. https://gym-app.vercel.app.
     /// Passkeys are bound to this host and OAuth callbacks come back through it.
     pub app_url: Url,
-    /// This backend's own public address, used in agent links and the Strava webhook.
+    /// This backend's own public address, used in agent links.
     pub public_url: Url,
     /// The passkey relying-party id: the app's host name.
     pub rp_id: String,
@@ -27,8 +27,6 @@ pub struct Config {
     pub cookie_secure: bool,
     /// Serve the built phone app from this folder too (the "drop Vercel" fallback).
     pub static_dir: Option<String>,
-    pub strava: Option<ProviderApp>,
-    pub strava_verify_token: Option<String>,
     pub spotify: Option<ProviderApp>,
 }
 
@@ -72,8 +70,6 @@ impl Config {
             setup_code: var("SETUP_CODE"),
             token_key,
             static_dir: var("STATIC_DIR"),
-            strava: provider("STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET"),
-            strava_verify_token: var("STRAVA_VERIFY_TOKEN"),
             spotify: provider("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"),
         })
     }

@@ -1,6 +1,6 @@
 [package]
 name = "gym-server"
-description = "The backend: sign-in, the app API, health intake, the agent link (MCP), Strava and Spotify."
+description = "The backend: sign-in, the app API, health intake, the agent link (MCP) and Spotify."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -6,7 +6,7 @@
 //! - `phone-key`: the write-only key the iPhone's Shortcuts use for Apple Health (and
 //!   Lifesum, which arrives through Apple Health).
 //! - `agent add | list | revoke`: links for Muse and Claude.
-//! - `authorize strava | spotify`: signs in through your browser and stores the tokens,
+//! - `authorize spotify`: signs in through your browser and stores the tokens,
 //!   encrypted, straight in the database.
 
 use std::time::Duration;
@@ -112,7 +112,7 @@ fn env(name: &str) -> anyhow::Result<String> {
     std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).with_context(|| format!("{name} is not set. Add it to your .env"))
 }
 
-/// Sign in to Strava or Spotify in your browser and store the tokens in the database.
+/// Sign in to Spotify in your browser and store the tokens in the database.
 ///
 /// Reads the developer app's id and secret from `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET`
 /// (or the `SPOTIFY_` pair) in your `.env`, and seals them together with the tokens, so the
@@ -134,7 +134,6 @@ pub async fn authorize(db: &PgPool, cfg: &Config, p: Provider) -> anyhow::Result
     let r = token_request(&http, p, &app, &[("grant_type", "authorization_code"), ("code", &code), ("redirect_uri", p.local_redirect())]).await.map_err(|e| anyhow!(e.message()))?;
     let refresh = r.refresh_token.clone().with_context(|| format!("{} sent no refresh token", p.label()))?;
     let account = match p {
-        Provider::Strava => r.athlete.as_ref().map(|a| format!("{} {}", a["firstname"].as_str().unwrap_or(""), a["lastname"].as_str().unwrap_or("")).trim().to_string()),
         Provider::Spotify => spotify_name(&http, &r.access_token).await,
     };
     let tokens = Tokens { access: r.access_token.clone(), refresh, expires_at: r.expiry(), client_id: Some(app.client_id), client_secret: Some(app.client_secret) };
@@ -254,7 +253,7 @@ pub async fn status(db: &PgPool) -> anyhow::Result<Vec<String>> {
         },
         last.0.map(|t| format!(", last delivery {}", t.format("%Y-%m-%d %H:%M UTC"))).unwrap_or_default()
     ));
-    for p in [Provider::Strava, Provider::Spotify] {
+    for p in [Provider::Spotify] {
         let row: Option<(Option<String>, DateTime<Utc>)> = sqlx::query_as("select account, connected_at from provider_tokens where provider = $1").bind(p.key()).fetch_optional(db).await?;
         out.push(match row {
             Some((acc, at)) => format!("{}: connected as {} since {}", p.label(), acc.unwrap_or_else(|| "?".into()), at.format("%Y-%m-%d")),

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Run a plate command against the real database, with your .env loaded.
 #   scripts/plate.sh status | phone-key | agent add Muse | agent list | agent revoke Muse
-#   scripts/plate.sh authorize strava | authorize spotify
+#   scripts/plate.sh authorize spotify
 # Your .env needs DATABASE_URL and TOKEN_KEY (the same values Render has), PUBLIC_URL for
-# printed links, and the STRAVA_ or SPOTIFY_ CLIENT_ID and CLIENT_SECRET before authorize.
+# printed links, and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET before authorize.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"

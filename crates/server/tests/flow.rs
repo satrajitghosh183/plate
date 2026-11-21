@@ -51,8 +51,6 @@ impl T {
             token_key: Some(rand_key()),
             cookie_secure: false,
             static_dir: None,
-            strava: None,
-            strava_verify_token: None,
             spotify: None,
         };
         let st = gym_server::build_state(cfg).await.expect("state");
@@ -239,10 +237,9 @@ async fn agents_cannot_reach_logged_sets() {
 }
 
 #[tokio::test]
-async fn no_agent_tool_returns_strava_or_spotify_data() {
+async fn no_agent_tool_returns_spotify_data() {
     let t = T::new().await;
     with_session(&t).await;
-    sqlx::query("insert into strava_activities (id, data, start_at) values (1, '{\"name\":\"STRAVA_MARKER_RUN\"}', now())").execute(&t.st.db).await.unwrap();
     sqlx::query("insert into provider_tokens (provider, ciphertext, nonce, account) values ('spotify', '\\x00', '\\x00', 'SPOTIFY_MARKER_ACCOUNT')").execute(&t.st.db).await.unwrap();
     let agent = t.agent("Claude").await;
     let (_, list) = t.mcp(&agent.key, "tools/list", json!({})).await;
@@ -471,19 +468,6 @@ async fn clips_store_links_only_and_refuse_bad_ones() {
 }
 
 #[tokio::test]
-async fn strava_list_is_empty_not_an_error_before_any_activity() {
-    let t = T::new().await;
-    let v = t.ok("GET", "/api/strava/activities", None).await;
-    assert_eq!(v, json!([]));
-    // Old rows are dropped on read: Strava's terms cap storage at seven days.
-    sqlx::query("insert into strava_activities (id, data, start_at, fetched_at) values (9, '{\"name\":\"Old\"}', now() - interval '9 days', now() - interval '9 days')").execute(&t.st.db).await.unwrap();
-    let v = t.ok("GET", "/api/strava/activities", None).await;
-    assert_eq!(v, json!([]));
-    assert_eq!(t.count("select count(*) from strava_activities").await, 0);
-    t.done().await;
-}
-
-#[tokio::test]
 async fn sets_logged_offline_after_an_idle_close_reopen_the_session() {
     let t = T::new().await;
     let (b, session, _) = with_session(&t).await;
@@ -504,8 +488,8 @@ async fn sets_logged_offline_after_an_idle_close_reopen_the_session() {
 #[tokio::test]
 async fn nothing_can_be_connected_from_the_app() {
     let t = T::new().await;
-    // Keys, agent links and Strava or Spotify sign-ins are made on the server only.
-    for (method, path) in [("POST", "/api/ingest-key"), ("POST", "/api/agents"), ("POST", "/api/oauth/strava/start"), ("GET", "/api/oauth/spotify/callback"), ("DELETE", "/api/oauth/strava")] {
+    // Keys, agent links and Spotify sign-ins (Strava is gone entirely) are made on the server only.
+    for (method, path) in [("POST", "/api/ingest-key"), ("POST", "/api/agents"), ("POST", "/api/oauth/strava/start"), ("GET", "/api/oauth/spotify/callback"), ("DELETE", "/api/oauth/strava"), ("GET", "/api/strava/activities"), ("POST", "/strava/webhook")] {
         let (s, _) = t.req(method, path, Auth::Owner, Some(json!({ "name": "Sneaky" }))).await;
         assert!(s == StatusCode::NOT_FOUND || s == StatusCode::METHOD_NOT_ALLOWED, "{method} {path} answered {s}");
     }

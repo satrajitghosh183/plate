@@ -31,7 +31,7 @@ Written in Rust end to end. The phone app is hosted on Vercel, the backend on Re
 | Agents | MCP over HTTP on the backend. One revocable link per agent. |
 | Apple Health | Free iPhone Shortcuts automations post to the backend. No Apple web API exists, and the paid bridge app is not used. |
 | Lifesum | Arrives through Apple Health as day totals. No direct connection. |
-| Strava | Display only, kept 7 days, never returned to agents. Only if you already subscribe, because Strava requires a subscription to create an API app. Otherwise off. |
+| Strava | Removed (2026-11-21): its API needs a paid subscription. |
 | Music | Spotify remote control, only if you already have Premium, which Spotify's API requires. Otherwise off. YouTube Music dropped. |
 | Clips | YouTube and Instagram reels play in a sheet inside the app. Muse supplies the links. The Instagram saved-folder connection is dropped. |
 | Splits | One pool of lifts, sorted automatically, dealt into any split. Switching never touches logged sets. |
@@ -45,12 +45,12 @@ Written in Rust end to end. The phone app is hosted on Vercel, the backend on Re
 iPhone PWA ──HTTPS──> Vercel (static app + /api rewrite) ──> Render (Axum) ──> Neon (Postgres)
 Agents (Muse, Claude) ───────────── MCP, per-agent key ───> Render
 Phone Shortcuts ─────────────────── write-only key ───────> Render
-Render ──> Strava API, Spotify API (tokens stay on Render)
+Render ──> Spotify API (tokens stay on Render)
 ```
 
 **The app talks to one address.** Vercel serves the static files and rewrites `/api/*` to Render (`vercel.json` external rewrite, documented by Vercel). The browser only ever sees the Vercel host, so the passkey and the session cookie belong to one origin and no cross-site rules apply. Turn rewrite caching off for `/api/*`.
 
-**Everything that is not the browser goes straight to Render.** That means agents, the phone's Shortcuts automations, the Strava webhook and the OAuth callbacks. They use keys, not cookies, and it keeps long-lived MCP responses off the Vercel rewrite, whose streaming limits are unverified.
+**Everything that is not the browser goes straight to Render.** That means agents, the phone's Shortcuts automations and the OAuth callbacks. They use keys, not cookies, and it keeps long-lived MCP responses off the Vercel rewrite, whose streaming limits are unverified.
 
 **Addresses.** No domain is bought. The app lives at its free `<name>.vercel.app` address and the backend at its free `<name>.onrender.com` address. A passkey is tied to the host it was made on, so pick the Vercel project name once and keep it.
 
@@ -85,7 +85,7 @@ Render ──> Strava API, Spotify API (tokens stay on Render)
 ## 4. Sign-in and secrets
 
 - **You:** passkey (`webauthn-rs`). The first registration needs a one-time setup code from a Render environment variable, then registration closes. Session cookie is HttpOnly, Secure, SameSite=Lax, and the backend checks the Origin header on writes.
-- **Providers (Strava, Spotify):** connected on the server with `scripts/plate.sh authorize strava|spotify`, never from the app (your call, 2026-11-20). The command signs in through your browser on your own computer and stores the developer app id, secret and tokens in the database, sealed with TOKEN_KEY. Tokens are stored encrypted in the database with a key held only in Render's environment, and are never sent to the app or to agents. The app's Connect screen shows status only. Spotify's refresh token expires 6 months after sign-in, so the app shows "Reconnect Spotify" when that is near.
+- **Provider (Spotify):** connected on the server with `scripts/plate.sh authorize spotify`, never from the app (your call, 2026-11-20). The command signs in through your browser on your own computer and stores the developer app id, secret and tokens in the database, sealed with TOKEN_KEY. Tokens are stored encrypted in the database with a key held only in Render's environment, and are never sent to the app or to agents. The app's Connect screen shows status only. Spotify's refresh token expires 6 months after sign-in, so the app shows "Reconnect Spotify" when that is near.
 - **Phone Shortcuts:** one write-only key. It can post health data and the workout-ended ping. It cannot read anything.
 - **Agents:** one key per agent, stored hashed, with scopes, a rate limit and a revoke switch. Every agent write is recorded with who, when and what changed.
 
@@ -155,14 +155,12 @@ The service worker caches the app, including the JS bridge it imports. The phone
 |---|---|---|---|
 | Apple Health | Shortcuts automations post to Render: one when a workout ends, one each evening that also re-sends the day's workouts | Workouts, energy burned, heart rate | Yes |
 | Lifesum | Through Apple Health, in the evening automation | Calories eaten and macros, as day totals | Yes |
-| Strava | OAuth on the backend, webhook. Only with an existing subscription | Recent activities, kept 7 days | Never |
+| Strava | Removed: its API needs a paid subscription | Nothing | Never |
 | Spotify | OAuth on the backend, remote control. Only with existing Premium | What is playing, play, pause, skip, pick a playlist | Never |
 
 Notes:
 - Lifesum stamps entries with sync time, so only day totals are reliable. Never let a re-export zero a past day.
-- Strava's API terms forbid giving its data to AI tools and cap storage at 7 days.
 - Spotify needs Premium and the Spotify app opened once on the phone. Show cover art and a link back, as its terms require.
-- Without a Strava subscription, runs recorded on the watch still reach Apple Health and can be shown from there. That route is unverified.
 - Shortcuts builds JSON poorly, so the backend also accepts plain `key=value` lines.
 
 ## 8. Agents
@@ -181,7 +179,7 @@ On adding a lift, an agent's tags are used only if the catalogue and the name ru
 | Write plans and splits | Yes | Yes | New plan version, shown in the activity list with Undo |
 | Add or replace clips | Yes | Yes | |
 | Change or delete logged sets | No | No | Nobody but you |
-| Read Strava or Spotify data | No | No | Not exposed by any tool |
+| Read Spotify data | No | No | Not exposed by any tool |
 | Read keys or tokens | No | No | |
 
 - **Default:** agent changes apply at once and appear in the activity list with Undo. A per-agent "ask me first" switch turns them into proposals you accept or decline.
@@ -190,7 +188,7 @@ On adding a lift, an agent's tags are used only if the catalogue and the name ru
 
 ## 9. Screens
 
-Built in the app: sign-in and first-time setup, no plan yet, Today (or rest day), choose a day, session list, log a set, rest, summary, Plan with split switcher, all lifts with "needs a look", lift editor, clips, Progress, Fuel with Strava runs, Connect (sources, agents, changes with undo, accept and decline), music player, settings, the offline and waking-server line.
+Built in the app: sign-in and first-time setup, no plan yet, Today (or rest day), choose a day, session list, log a set, rest, summary, Plan with split switcher, all lifts with "needs a look", lift editor, clips, Progress, Fuel, Connect (sources, agents, changes with undo, accept and decline), music player, settings, the offline and waking-server line.
 
 Equipment is drawn in code: the loaded bar with the exact plates, a dumbbell pair, a cable or machine stack with the pin at the right plate, and a kettlebell. Bodyweight lifts keep the body model.
 
@@ -210,7 +208,7 @@ Motion follows the prototype: only movement and fades, never animated blur. iPho
 - How long the app takes to become usable after the backend has slept.
 - Passkey and session cookie survive through the Vercel rewrite in the installed app.
 - Spotify lists the phone as a device, and play and skip work.
-- Signing in to Spotify and Strava from the installed app comes back to the app, still signed in.
+- Signing in to Spotify from the installed app comes back to the app, still signed in.
 - Glass panes stay smooth while scrolling and during the pane transition.
 - The outbox survives closing the app and a week without opening it.
 
@@ -220,14 +218,14 @@ Motion follows the prototype: only movement and fades, never animated blur. iPho
 
 **Phase 3: agents.** MCP tools, per-agent keys and scopes, activity list with Undo, proposals.
 
-**Phase 4: other apps.** The Shortcuts automations and health intake with Lifesum totals, automatic session close, Fuel, Strava display, Spotify control, clip sheet.
+**Phase 4: other apps.** The Shortcuts automations and health intake with Lifesum totals, automatic session close, Fuel, Spotify control, clip sheet.
 
 **Phase 5: finish.** Motion, body renders per muscle group, remaining screens, accessibility pass.
 
 ## 11. Open questions
 
 1. **How Muse connects.** Can Muse use an MCP address with a key in a header, does it need OAuth, or can it only take a plain link?
-2. **Do you already pay for Spotify Premium or Strava?** Each one is switched on only if you do.
+2. **Do you already pay for Spotify Premium?** It is switched on only if you do. (Strava: removed, 2026-11-21.)
 3. **Results of Phase 0.** Any failure there changes the matching section above.
 
 ## 12. Request check
@@ -236,7 +234,7 @@ Motion follows the prototype: only movement and fades, never animated blur. iPho
 |---|---|
 | Runs on the phone in the gym | Sections 1, 5 (offline) |
 | Agents can read and update it | Section 8 |
-| Apple Health, Lifesum, Strava | Section 7 |
+| Apple Health, Lifesum | Section 7 |
 | Muse writes plans, you log results | Sections 5, 8 |
 | Clips without leaving the app | Section 6 |
 | Calories visible but secondary | Section 7, Fuel screen |
@@ -246,7 +244,6 @@ Motion follows the prototype: only movement and fades, never animated blur. iPho
 | Any split from one pool, automatic sorting | Section 5 |
 | Spotify inside the app | Section 7 |
 | All API work on the backend | Section 4 |
-| Strava display only | Sections 7, 8 |
 | Give Muse a link | Section 8 |
 | kg and lb | Section 5 |
 | Session saves when the watch workout ends | Section 5 |
@@ -263,7 +260,7 @@ Motion follows the prototype: only movement and fades, never animated blur. iPho
 5. **Phone.** Open the app, enter the setup code, save the passkey. Then run `scripts/plate.sh phone-key` and build the two automations in `shortcuts/README.md`.
 6. **Muse.** Run `scripts/plate.sh agent add Muse` and give Muse the link.
 7. **Phase 0.** Open `/phase0.html` from the Home Screen app and record the results here.
-8. **Spotify and Strava** (only if you already pay for them): create the developer apps, put their ids and secrets in `.env`, and run `scripts/plate.sh authorize spotify` and `scripts/plate.sh authorize strava`.
+8. **Spotify** (only if you pay for Premium): create the developer app, put its id and secret in `.env`, and run `scripts/plate.sh authorize spotify`.
 
 **Signing in.** Three ways, all switched on from the server: a passkey (Face ID or Touch ID, synced by iCloud Keychain), your email and password (`plate login email you@…`, then `plate login password`; stored as an Argon2id hash), and Google (`plate login google`, which only accepts a verified Google account with your email). "Sign in with Apple" itself needs a paid Apple developer account, so it is left out. A sign-in lasts 400 days and renews every time the app opens. Without one, every data route answers 401. `plate logout-everywhere` signs out every device.
 

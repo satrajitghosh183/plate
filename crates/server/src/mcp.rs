@@ -4,7 +4,7 @@
 //! `Authorization: Bearer <key>`. Requests are stateless: each POST carries one
 //! JSON-RPC message.
 //!
-//! What agents can never do from here: touch logged sets, see Strava or Spotify
+//! What agents can never do from here: touch logged sets, see Spotify
 //! data, or read any key or token. Those simply have no tool.
 
 use axum::Json;

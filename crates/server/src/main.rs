@@ -18,8 +18,7 @@ const USAGE: &str = "plate: the Plate server and its setup commands
   plate agent add <name>     new link for an agent such as Muse (shown once)
   plate agent list           agents and when they were last used
   plate agent revoke <name>  stop an agent's link working
-  plate authorize strava     sign in to Strava in your browser; tokens are stored encrypted
-  plate authorize spotify    the same for Spotify
+  plate authorize spotify    sign in to Spotify in your browser; tokens are stored encrypted
   plate login email <addr>   your email, the only one password and Google sign-in accept
   plate login password       set or change the password (typed, not shown)
   plate login google         switch on Google sign-in (GOOGLE_CLIENT_ID/SECRET from .env)
@@ -48,7 +47,7 @@ async fn serve() -> anyhow::Result<()> {
         tracing::warn!("SETUP_CODE is not set: nobody can register the first passkey");
     }
     if cfg.token_key.is_none() {
-        tracing::warn!("TOKEN_KEY is not set: Strava and Spotify stay switched off");
+        tracing::warn!("TOKEN_KEY is not set: Spotify stays switched off");
     }
     let st = gym_server::build_state(cfg).await?;
     gym_server::spawn_housekeeping(st.clone());
@@ -105,7 +104,7 @@ async fn command(words: &[&str]) -> anyhow::Result<()> {
             println!("{}", if n == 0 { "No active agent by that name".to_string() } else { "Revoked. Its link stopped working".to_string() });
         }
         ["authorize", which] => {
-            let p = Provider::parse(which).ok_or_else(|| anyhow::anyhow!("Use strava or spotify"))?;
+            let p = Provider::parse(which).ok_or_else(|| anyhow::anyhow!("Use: plate authorize spotify"))?;
             let who = gym_server::admin::authorize(&db, &cfg, p).await?;
             println!("{} is connected as {who}. The tokens are stored encrypted on the server.", p.label());
         }

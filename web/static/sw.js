@@ -44,7 +44,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
 
   // Never cache data or anything with a key in it.
-  if (url.origin === self.location.origin && /^\/(api|mcp|ingest|strava|healthz)/.test(url.pathname)) return;
+  if (url.origin === self.location.origin && /^\/(api|mcp|ingest|healthz)/.test(url.pathname)) return;
 
   if (url.hostname === "fonts.googleapis.com" || url.hostname === "fonts.gstatic.com") {
     event.respondWith(

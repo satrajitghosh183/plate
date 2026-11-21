@@ -268,18 +268,7 @@ pub struct ProviderStatus {
 pub struct Connections {
     pub health_last_delivery: Option<DateTime<Utc>>,
     pub health_key_set: bool,
-    pub strava: ProviderStatus,
     pub spotify: ProviderStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StravaActivity {
-    pub id: i64,
-    pub name: String,
-    pub sport: String,
-    pub start: DateTime<Utc>,
-    pub distance_km: f64,
-    pub moving_min: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
