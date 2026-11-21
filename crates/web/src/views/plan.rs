@@ -1,7 +1,7 @@
 //! The plan: one pool of lifts, dealt into whichever split you pick.
 
 use gym_core::api::Plan;
-use gym_core::split::{PoolLift, Split, builtin, deal};
+use gym_core::split::{PoolLift, Split, builtin, deal, style_of, with_days};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -32,6 +32,54 @@ fn local_plan(plan: &Plan, split: &Split) -> Plan {
     }
 }
 
+/// When the plan begins. Before that day, Today says when it starts and what comes first.
+#[component]
+fn StartDate() -> impl IntoView {
+    let c = ctx();
+    let starts = move || c.plan().and_then(|p| p.starts_on);
+    let today = ui::today();
+    let set = move |value: Option<chrono::NaiveDate>| {
+        spawn_local(async move {
+            match net::post::<_, Option<Plan>>("/api/plan/start", &serde_json::json!({ "starts_on": value })).await {
+                Ok(p) => {
+                    c.data.update(|d| if let Some(d) = d { d.plan = p; });
+                    c.refresh().await;
+                    c.toast_with(
+                        match value { Some(d) if d > ui::today() => format!("The plan starts {}", ui::day_label(d)), _ => "The plan starts today".into() },
+                        Some(("Undo".into(), ToastAction::UndoPlan)),
+                    );
+                }
+                Err(e) => c.fail(&e),
+            }
+        });
+    };
+    view! {
+        <div class="list">
+            <label class="row" for="plan-start">
+                <span class="stack grow">
+                    <span>"Starts"</span>
+                    <span class="sub">{move || match starts() {
+                        Some(d) if d > today => format!("Nothing to train until {}", ui::day_label(d)),
+                        Some(d) => format!("Started {}", ui::day_label(d)),
+                        None => "Started. Pick a date to begin later, for example next Monday".into(),
+                    }}</span>
+                </span>
+                <input id="plan-start" type="date" class="dateinput num"
+                    prop:value=move || starts().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
+                    on:change=move |e| {
+                        let v = event_target_value(&e);
+                        set(chrono::NaiveDate::parse_from_str(&v, "%Y-%m-%d").ok());
+                    }/>
+            </label>
+            {move || starts().filter(|d| *d > today).map(|_| view! {
+                <button type="button" class="row press" on:click=move |_| set(None)>
+                    <span class="grow">"Start today instead"</span>
+                </button>
+            })}
+        </div>
+    }
+}
+
 #[component]
 pub fn PlanPage() -> impl IntoView {
     let c = ctx();
@@ -49,26 +97,27 @@ pub fn PlanPage() -> impl IntoView {
             (s.key.clone(), short)
         })
         .collect();
-    let current_key = move || plan().map(|p| p.split.key).unwrap_or_default();
-    let is_custom = move || current_key().starts_with("custom");
+    // The built-in style ("ppl" for "ppl@013457" too), so the picker shows it whatever days you train.
+    let current_key = move || plan().map(|p| style_of(&p.split.key).to_string()).unwrap_or_default();
+    let is_custom = move || builtin().iter().all(|s| s.key != current_key());
+    let weekdays = move || plan().map(|p| p.days.iter().map(|d| d.weekday).collect::<Vec<u8>>()).unwrap_or_default();
     let n_options = options.len();
     let busy = RwSignal::new(false);
 
-    let switch = move |key: String| {
-        if busy.get_untracked() || current_key() == key {
+    // Apply a split: shown at once on the phone, then saved. `what` is the toast.
+    let apply = move |split: Split, what: String| {
+        let Some(p) = plan() else { return };
+        if busy.get_untracked() || p.split.key == split.key {
             return;
         }
-        let Some(p) = plan() else { return };
-        let Some(split) = builtin().into_iter().find(|s| s.key == key) else { return };
-        let name = split.name.to_lowercase();
         let optimistic = local_plan(&p, &split);
         animate_plan(move || c.data.update(|d| if let Some(d) = d { d.plan = Some(optimistic); }));
         busy.set(true);
         spawn_local(async move {
-            match net::post::<_, Option<Plan>>("/api/plan/switch", &serde_json::json!({ "key": key })).await {
+            match net::post::<_, Option<Plan>>("/api/plan/switch", &serde_json::json!({ "split": split })).await {
                 Ok(server) => {
                     c.data.update(|d| if let Some(d) = d { d.plan = server; });
-                    c.toast_with(format!("Now on {name}. Logged sets are untouched"), Some(("Undo".into(), ToastAction::UndoPlan)));
+                    c.toast_with(what, Some(("Undo".into(), ToastAction::UndoPlan)));
                 }
                 Err(e) => {
                     animate_plan(move || c.data.update(|d| if let Some(d) = d { d.plan = Some(p); }));
@@ -77,6 +126,33 @@ pub fn PlanPage() -> impl IntoView {
             }
             busy.set(false);
         });
+    };
+    // Another style on the days you already train.
+    let switch = move |key: String| {
+        if current_key() == key {
+            return;
+        }
+        let days = weekdays();
+        let Some(split) = with_days(&key, &days).or_else(|| builtin().into_iter().find(|s| s.key == key)) else { return };
+        let name = split.name.to_lowercase();
+        apply(split, format!("Now on {name}. Logged sets are untouched"));
+    };
+    // Train on one more or one fewer weekday, same style.
+    let toggle_day = move |wd: u8| {
+        let mut days = weekdays();
+        if let Some(i) = days.iter().position(|d| *d == wd) {
+            if days.len() == 1 {
+                c.say("Keep at least one training day");
+                return;
+            }
+            days.remove(i);
+        } else {
+            days.push(wd);
+        }
+        let style = if is_custom() { "full_body".to_string() } else { current_key() };
+        let Some(split) = with_days(&style, &days) else { return };
+        let n = split.days.len();
+        apply(split, format!("{n} training day{} a week. Logged sets are untouched", if n == 1 { "" } else { "s" }));
     };
 
     view! {
@@ -121,6 +197,18 @@ pub fn PlanPage() -> impl IntoView {
                         </div>
                         <span class="meta">{move || plan().map(|p| p.split.summary)}</span>
                     </div>
+                    <div class="stack g8">
+                        <span class="meta">"Training days"</span>
+                        <div class="weekdays" role="group" aria-label="Training days">
+                            {(0u8..7).map(|wd| view! {
+                                <button type="button" class="chip pick press" class:on=move || weekdays().contains(&wd)
+                                    aria-pressed=move || weekdays().contains(&wd).to_string()
+                                    disabled=move || busy.get()
+                                    on:click=move |_| toggle_day(wd)>{ui::weekday_short(wd)}</button>
+                            }).collect_view()}
+                        </div>
+                    </div>
+                    <StartDate/>
                 }
             })}
             {move || plan().map(|p| {

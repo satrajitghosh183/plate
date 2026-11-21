@@ -1,6 +1,6 @@
 //! Bottom sheets: they rise over the screen behind, and drag down to close.
 
-use gym_core::api::{ClipProvider, Lift, LiftPatch, MusicCommand, NowPlaying, Playlist, Prescription, Settings};
+use gym_core::api::{ClipProvider, Lift, LiftPatch, MusicCommand, MusicDevice, NowPlaying, Playlist, Prescription, Settings};
 use gym_core::split::bucket;
 use gym_core::units::format_number;
 use gym_core::{Equipment, LiftTags, Mechanic, Muscle, Pattern, TagSource, Unit, Weight};
@@ -405,11 +405,17 @@ fn Music() -> impl IntoView {
     let c = ctx();
     let now: RwSignal<Option<NowPlaying>> = RwSignal::new(None);
     let lists: RwSignal<Vec<Playlist>> = RwSignal::new(vec![]);
+    let devices: RwSignal<Vec<MusicDevice>> = RwSignal::new(vec![]);
+    // Where new playback goes: the device you picked, else whichever is playing.
+    let chosen: RwSignal<Option<String>> = RwSignal::new(None);
     let load = move || {
         spawn_local(async move {
             match net::get::<NowPlaying>("/api/music/now").await {
                 Ok(n) => now.set(Some(n)),
                 Err(e) => c.fail(&e),
+            }
+            if let Ok(d) = net::get::<Vec<MusicDevice>>("/api/music/devices").await {
+                devices.set(d);
             }
         });
     };
@@ -427,7 +433,8 @@ fn Music() -> impl IntoView {
     });
     let send = move |action: &'static str, playlist: Option<String>| {
         spawn_local(async move {
-            match net::call("POST", "/api/music/command", Some(&MusicCommand { action: action.into(), playlist_id: playlist })).await {
+            let device_id = if matches!(action, "playlist" | "play") { chosen.get_untracked() } else { None };
+            match net::call("POST", "/api/music/command", Some(&MusicCommand { action: action.into(), playlist_id: playlist, device_id })).await {
                 Ok(()) => {
                     gloo_timers::future::TimeoutFuture::new(450).await;
                     load();
@@ -445,7 +452,7 @@ fn Music() -> impl IntoView {
                     <span class="stack grow">
                         <span class="h2 ellipsis">{n.track.clone().unwrap_or_else(|| if n.no_device { "Nothing playing".into() } else { "Paused".into() })}</span>
                         <span class="sub ellipsis">{n.artist.clone().unwrap_or_default()}</span>
-                        <span class="meta">{n.device.clone().map(|d| format!("On {d}")).unwrap_or_else(|| "Open Spotify once if your phone isn't listed".into())}</span>
+                        <span class="meta">{n.device.clone().map(|d| format!("On {d}")).unwrap_or_else(|| "Pick where to play below".into())}</span>
                     </span>
                 </div>
                 <div class="rowx" style="justify-content: center; gap: 24px">
@@ -458,6 +465,33 @@ fn Music() -> impl IntoView {
                 {n.track_url.clone().map(|u| view! { <a class="textlink" href=u target="_blank" rel="noopener">"Listen on Spotify"</a> })}
             }
         })}
+        <div class="stack g8">
+            <span class="meta">"Play on"</span>
+            <div class="list">
+                {move || devices.get().into_iter().map(|d| {
+                    let id = d.id.clone();
+                    let id2 = d.id.clone();
+                    let here = d.active;
+                    view! {
+                        <button type="button" class="row press" on:click=move |_| {
+                            chosen.set(Some(id.clone()));
+                            let device = id.clone();
+                            spawn_local(async move {
+                                match net::call("POST", "/api/music/command", Some(&MusicCommand { action: "transfer".into(), playlist_id: None, device_id: Some(device) })).await {
+                                    Ok(()) => { gloo_timers::future::TimeoutFuture::new(600).await; load(); }
+                                    Err(e) => c.fail(&e),
+                                }
+                            });
+                        }>
+                            <span class="dot" class:ok=move || here || chosen.get().as_deref() == Some(id2.as_str())></span>
+                            <span class="stack grow"><span class="ellipsis">{d.name.clone()}</span><span class="meta">{d.kind.clone()}</span></span>
+                            <span class="r">{if here { "Playing here" } else { "Play here" }}</span>
+                        </button>
+                    }
+                }).collect_view()}
+            </div>
+            <p class="meta">"Not listed? Open the Spotify app on this computer or phone, or open.spotify.com in a browser, then wait a few seconds"</p>
+        </div>
         {move || (!lists.get().is_empty()).then(|| view! {
             <div class="stack g8">
                 <span class="meta">"Your playlists"</span>
@@ -475,7 +509,7 @@ fn Music() -> impl IntoView {
                 </div>
             </div>
         })}
-        <p class="meta">"Music from Spotify. Playback happens in the Spotify app"</p>
+        <p class="meta">"Music from Spotify, playing in whichever Spotify app you pick: desktop, web or phone. Needs Spotify Premium"</p>
     }
 }
 

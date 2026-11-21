@@ -929,3 +929,43 @@ async fn the_backup_holds_every_session() {
     assert_eq!(v["sessions"].as_array().map(|a| a.len()), Some(230));
     t.done().await;
 }
+
+#[tokio::test]
+async fn you_choose_how_many_days_you_train() {
+    let t = T::new().await;
+    t.ok("POST", "/api/plan/starter", None).await;
+    let six = gym_core::split::with_days("ppl", &[0, 1, 2, 3, 4, 5]).unwrap();
+    let p = t.ok("POST", "/api/plan/switch", Some(json!({ "split": six }))).await;
+    let days = p["days"].as_array().unwrap();
+    assert_eq!(days.len(), 6, "{p}");
+    assert_eq!(p["split"]["key"], "ppl@012345");
+    assert!(days.iter().all(|d| !d["lifts"].as_array().unwrap().is_empty()), "every day gets lifts: {p}");
+    // Back to the default three days gives the built-in split.
+    let three = gym_core::split::with_days("ppl", &[0, 2, 4]).unwrap();
+    let p = t.ok("POST", "/api/plan/switch", Some(json!({ "split": three }))).await;
+    assert_eq!(p["split"]["key"], "ppl");
+    t.done().await;
+}
+
+#[tokio::test]
+async fn a_plan_can_start_on_a_later_day() {
+    let t = T::new().await;
+    t.ok("POST", "/api/plan/starter", None).await;
+    let start = Utc::now().date_naive() + Duration::days(10);
+    let p = t.ok("POST", "/api/plan/start", Some(json!({ "starts_on": start }))).await;
+    assert_eq!(p["starts_on"], json!(start), "{p}");
+    let b = t.bootstrap().await;
+    assert!(b.today.is_rest_day && b.today.day_index.is_none(), "nothing to train before the start");
+    let next = b.today.next_day_index.expect("the first day is named");
+    let plan = b.plan.unwrap();
+    let swd = chrono::Datelike::weekday(&start).num_days_from_monday() as u8;
+    let first = (0..7u8).map(|k| (swd + k) % 7).find(|w| plan.days.iter().any(|d| d.weekday == *w)).unwrap();
+    assert_eq!(plan.days[next].weekday, first, "first up is the first training day on or after the start");
+    assert_eq!(plan.block_week, Some(1), "the block counts from the start");
+    // A typo far in the future is refused; clearing it starts the plan now.
+    let (s, _) = t.req("POST", "/api/plan/start", Auth::Owner, Some(json!({ "starts_on": Utc::now().date_naive() + Duration::days(900) }))).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let p = t.ok("POST", "/api/plan/start", Some(json!({ "starts_on": null }))).await;
+    assert!(p["starts_on"].is_null());
+    t.done().await;
+}

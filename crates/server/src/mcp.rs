@@ -230,7 +230,8 @@ pub fn tools() -> Vec<Value> {
                 "name": { "type": "string", "maxLength": 60, "description": "For example Strength base" },
                 "split_key": { "type": "string", "enum": ["ppl", "upper_lower", "bro", "full_body"] },
                 "split": split_schema(),
-                "block_weeks": { "type": "integer", "minimum": 1, "maximum": 52, "description": "Starts a block of this many weeks today." },
+                "block_weeks": { "type": "integer", "minimum": 1, "maximum": 52, "description": "Starts a block of this many weeks today, or on starts_on." },
+                "starts_on": { "type": "string", "format": "date", "description": "The plan's first day, YYYY-MM-DD, when it should not start today (e.g. next Monday). Until then the app shows when it starts." },
                 "retire_others": { "type": "boolean", "description": "Retire every lift not listed. Undo brings them back." },
                 "lifts": { "type": "array", "maxItems": 60, "items": { "type": "object", "properties": plan_lift, "required": ["name", "sets", "reps", "weight"] } }
             }, "required": ["lifts"] }),
@@ -337,7 +338,7 @@ async fn call(st: &AppState, agent: &AgentCaller, name: &str, a: Value) -> Resul
             Ok(json!({
                 "unit": unit,
                 "plan": plan.as_ref().map(|p| json!({
-                    "name": p.name, "split": p.split.name, "block_week": p.block_week, "block_weeks": p.block_weeks,
+                    "name": p.name, "split": p.split.name, "block_week": p.block_week, "block_weeks": p.block_weeks, "starts_on": p.starts_on,
                     "days": p.days.iter().map(|d| json!({
                         "name": d.name, "weekday": d.weekday,
                         "lifts": d.lifts.iter().filter_map(|id| lifts.iter().find(|l| l.id == *id)).map(|l| lift_json(l, unit)).collect::<Vec<_>>()

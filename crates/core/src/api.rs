@@ -135,6 +135,9 @@ pub struct Plan {
     pub name: String,
     pub block_week: Option<u32>,
     pub block_weeks: Option<u32>,
+    /// The first day of the plan. Before it, Today says when it starts.
+    #[serde(default)]
+    pub starts_on: Option<NaiveDate>,
     pub split: Split,
     pub days: Vec<PlanDay>,
     pub unplaced: Vec<Uuid>,
@@ -292,10 +295,23 @@ pub struct Playlist {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MusicCommand {
-    /// "play", "pause", "next", "previous", or "playlist".
+    /// "play", "pause", "next", "previous", "playlist", or "transfer" (move playback to `device_id`).
     pub action: String,
     #[serde(default)]
     pub playlist_id: Option<String>,
+    /// Play on this device. Empty means the one already playing.
+    #[serde(default)]
+    pub device_id: Option<String>,
+}
+
+/// A Spotify app that is open somewhere: the phone, the desktop app, or open.spotify.com.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MusicDevice {
+    pub id: String,
+    pub name: String,
+    /// "Computer", "Smartphone", "Speaker", …
+    pub kind: String,
+    pub active: bool,
 }
 
 // ---------- agents ----------

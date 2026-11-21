@@ -191,6 +191,90 @@ pub fn builtin_by_key(key: &str) -> Option<Split> {
     builtin().into_iter().find(|s| s.key == key)
 }
 
+/// The built-in style a split came from: "ppl" for both "ppl" and "ppl@013457".
+pub fn style_of(key: &str) -> &str {
+    key.split('@').next().unwrap_or(key)
+}
+
+/// A built-in style spread over the weekdays you train (0 is Monday).
+///
+/// Push, pull, legs on six days is push, pull, legs twice; upper lower alternates; full
+/// body gives every day everything; the bro split's five groups are shared out over fewer
+/// days, or repeat over more. The default days give back the built-in split itself.
+pub fn with_days(style: &str, weekdays: &[u8]) -> Option<Split> {
+    use Bucket as B;
+    use Muscle as M;
+    let base = builtin_by_key(style)?;
+    let mut wd: Vec<u8> = weekdays.iter().copied().filter(|d| *d <= 6).collect();
+    wd.sort_unstable();
+    wd.dedup();
+    if wd.is_empty() {
+        return None;
+    }
+    if base.days.iter().map(|d| d.weekday).collect::<Vec<_>>() == wd {
+        return Some(base);
+    }
+    let n = wd.len();
+    // Name repeats A, B, C when a pattern comes round again.
+    let named = |names: &[&str], i: usize| -> String {
+        let k = names.len();
+        let name = names[i % k];
+        if n > k { format!("{name} {}", ["A", "B", "C", "D", "E", "F", "G"][i / k]) } else { name.to_string() }
+    };
+    let days: Vec<SplitDay> = match style {
+        "ppl" => {
+            let rules = [B::Push, B::Pull, B::Legs];
+            wd.iter().enumerate().map(|(i, w)| day(&named(&["Push", "Pull", "Legs"], i), *w, DayRule::Buckets(vec![rules[i % 3]]))).collect()
+        }
+        "upper_lower" => wd
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                let rule = if i % 2 == 0 { DayRule::Buckets(vec![B::Push, B::Pull]) } else { DayRule::Buckets(vec![B::Legs]) };
+                day(&named(&["Upper", "Lower"], i), *w, rule)
+            })
+            .collect(),
+        "full_body" => wd.iter().enumerate().map(|(i, w)| day(&format!("Day {}", ["A", "B", "C", "D", "E", "F", "G"][i]), *w, DayRule::Everything)).collect(),
+        "bro" => {
+            let groups: [(&str, Vec<Muscle>); 5] = [
+                ("Chest", vec![M::Chest]),
+                ("Back", vec![M::Lats, M::MiddleBack, M::LowerBack, M::Traps]),
+                ("Shoulders", vec![M::Shoulders, M::Neck]),
+                ("Arms", vec![M::Biceps, M::Triceps, M::Forearms]),
+                ("Legs", vec![M::Quadriceps, M::Hamstrings, M::Glutes, M::Calves, M::Adductors, M::Abductors]),
+            ];
+            if n >= 5 {
+                let names: Vec<&str> = groups.iter().map(|g| g.0).collect();
+                wd.iter().enumerate().map(|(i, w)| day(&named(&names, i), *w, DayRule::Muscles(groups[i % 5].1.clone()))).collect()
+            } else {
+                // Fewer days than groups: deal the groups out in turn.
+                let mut parts: Vec<(Vec<&str>, Vec<Muscle>)> = vec![(Vec::new(), Vec::new()); n];
+                for (g, (name, muscles)) in groups.iter().enumerate() {
+                    parts[g % n].0.push(name);
+                    parts[g % n].1.extend(muscles.iter().copied());
+                }
+                wd.iter()
+                    .zip(parts)
+                    .map(|(w, (names, muscles))| {
+                        let name = if n == 1 { "Whole body".to_string() } else { names.join(" and ") };
+                        day(&name, *w, DayRule::Muscles(muscles))
+                    })
+                    .collect()
+            }
+        }
+        _ => return None,
+    };
+    let code: String = wd.iter().map(|d| char::from(b'0' + d)).collect();
+    let split = Split {
+        key: format!("{style}@{code}"),
+        name: base.name.clone(),
+        summary: format!("{} · {n} day{} a week", base.name, if n == 1 { "" } else { "s" }),
+        days,
+    };
+    split.validate().ok()?;
+    Some(split)
+}
+
 /// One lift from the pool as the dealer sees it.
 #[derive(Debug, Clone)]
 pub struct PoolLift<'a> {
@@ -371,5 +455,26 @@ mod tests {
         assert!(s.validate().is_err());
         let json = r#"{"key":"custom:x","name":"X","summary":"","days":[{"name":"A","weekday":0,"rule":{"kind":"buckets","values":["push","sideways"]}}]}"#;
         assert!(serde_json::from_str::<Split>(json).is_err(), "unknown bucket must be refused");
+    }
+
+    #[test]
+    fn any_number_of_training_days() {
+        let six = with_days("ppl", &[0, 1, 2, 3, 4, 5]).unwrap();
+        assert_eq!(six.days.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Push A", "Pull A", "Legs A", "Push B", "Pull B", "Legs B"]);
+        assert_eq!(six.summary, "Push, pull, legs · 6 days a week");
+        assert_eq!(style_of(&six.key), "ppl");
+        // The default days give the built-in split back, key and all.
+        assert_eq!(with_days("ppl", &[4, 0, 2]).unwrap().key, "ppl");
+        let two = with_days("bro", &[1, 4]).unwrap();
+        assert_eq!(two.days.len(), 2);
+        assert!(two.validate().is_ok());
+        for style in ["ppl", "upper_lower", "full_body", "bro"] {
+            for n in 1..=7u8 {
+                let days: Vec<u8> = (0..n).collect();
+                let s = with_days(style, &days).unwrap_or_else(|| panic!("{style} on {n} days"));
+                assert_eq!(s.days.len(), n as usize, "{style} on {n} days");
+            }
+        }
+        assert!(with_days("ppl", &[]).is_none());
     }
 }

@@ -12,6 +12,9 @@
   --line: rgba(255, 255, 255, .12);
   --bad: #ef6a6b;
   --bar: #3a3a3c;
+  --protein: #f5f5f7;
+  --carbs: #8e8e93;
+  --fat: #48484a;
   --raised: rgba(255, 255, 255, .08);
   --glass: linear-gradient(180deg, rgba(255, 255, 255, .12), rgba(255, 255, 255, .05));
   --glass-edge: inset 0 1px 0 rgba(255, 255, 255, .3), inset 0 0 0 1px rgba(255, 255, 255, .08);
@@ -286,3 +289,32 @@ select.input { appearance: none; -webkit-appearance: none; background-image: lin
   .press:hover, .row.press:hover { opacity: .86; }
   .tab:hover { color: var(--fg); }
 }
+
+/* Fuel breakdown */
+.fuelday { scroll-margin-top: 24px; }
+.macro .track { height: 6px; border-radius: 3px; }
+.macro .track > i { border-radius: 3px; }
+.split { display: flex; height: 10px; border-radius: 5px; overflow: hidden; gap: 2px; }
+.split > i { display: block; min-width: 2px; }
+.fuelday .dot { display: inline-block; vertical-align: middle; margin-right: 6px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.tile { display: flex; flex-direction: column; gap: 2px; padding: 12px; border-radius: 14px; background: rgba(255, 255, 255, .05); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07); min-width: 0; }
+.tile .tv { font: 400 26px/1.1 var(--serif); letter-spacing: -.02em; }
+.chart { position: relative; height: 140px; }
+.chart .bars.dyn { position: absolute; inset: 0; height: 100%; }
+.bars.dyn i { cursor: pointer; }
+.bars.dyn i.over { background: #6e6e73; }
+.bars.dyn i.now { background: var(--fg); }
+.chart .goal { position: absolute; left: 0; right: 0; border-top: 1px dashed rgba(255, 255, 255, .35); pointer-events: none; z-index: 1; }
+.daytable { border-top: 1px solid var(--line); overflow-x: auto; }
+.dt { display: grid; grid-template-columns: minmax(84px, 1.4fr) repeat(5, minmax(48px, 1fr)); gap: 8px; align-items: center; min-height: 44px; padding: 8px 0; border-bottom: 1px solid var(--line); width: 100%; text-align: right; font-size: 14px; min-width: 420px; }
+.dt > span:first-child { text-align: left; }
+.dt.head { min-height: 32px; }
+.dt.on { background: rgba(255, 255, 255, .06); }
+.dt .hit { color: var(--fg); font-weight: 500; }
+
+/* Plan: training days */
+.weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.weekdays .chip.pick { padding: 0; text-align: center; }
+
+.dateinput { background: rgba(255, 255, 255, .08); color: var(--fg); border: 0; border-radius: 10px; height: 36px; padding: 0 10px; font: 400 14px var(--sans); color-scheme: dark; flex: none; }

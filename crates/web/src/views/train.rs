@@ -330,6 +330,8 @@ fn TodayPane() -> impl IntoView {
     let default_rest = move || c.data.with(|d| d.as_ref().map(|d| d.settings.rest_seconds).unwrap_or(120));
     let in_progress = move || c.session.with(|s| s.as_ref().is_some_and(|s| !s.closed && s.ended_at.is_none()));
     let spotify = move || c.data.with(|d| d.as_ref().is_some_and(|d| d.connections.spotify.connected));
+    // The plan begins on a later day: say when, and what comes first.
+    let starts_later = move || plan().and_then(|p| p.starts_on).filter(|d| *d > ui::today());
     view! {
         <div class="pc tabbed" class:on=on inert=move || !on()>
             <div class="stack g8">
@@ -339,6 +341,9 @@ fn TodayPane() -> impl IntoView {
                 })}</span>
                 <h1 class="display">{move || {
                     let p = plan();
+                    if let Some(d) = starts_later() {
+                        return if d - ui::today() < chrono::Duration::days(7) { format!("Starts {}", ui::weekday_name(chrono::Datelike::weekday(&d).num_days_from_monday() as u8)) } else { format!("Starts {}", ui::day_label(d)) };
+                    }
                     match (rest_day(), shown(), p) {
                         (true, _, _) => "Rest day".to_string(),
                         (false, Some(i), Some(p)) => day_title(&p.days[i].name),
@@ -347,6 +352,9 @@ fn TodayPane() -> impl IntoView {
                 }}</h1>
                 <p class="sub">{move || {
                     let l = lifts();
+                    if let (Some(d), Some(n), Some(p)) = (starts_later(), next(), plan()) {
+                        return format!("Your plan begins {}. First up is {}. Rest until then, or train it now", ui::day_label(d), p.days[n].name.to_lowercase());
+                    }
                     if rest_day() {
                         match (next(), plan()) {
                             (Some(n), Some(p)) => format!("Next is {} on {}. Rest, or train it now", p.days[n].name.to_lowercase(), ui::weekday_name(p.days[n].weekday)),

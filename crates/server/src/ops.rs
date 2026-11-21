@@ -69,6 +69,9 @@ pub struct WritePlan {
     pub split: Option<Split>,
     #[serde(default)]
     pub block_weeks: Option<u32>,
+    /// First day of the plan, if not today.
+    #[serde(default)]
+    pub starts_on: Option<NaiveDate>,
     #[serde(default)]
     pub lifts: Vec<PlanLift>,
     /// Retire every lift not in `lifts` (they come back with undo).
@@ -113,13 +116,18 @@ pub enum Op {
         #[serde(default)]
         block_weeks: Option<u32>,
     },
+    /// When the plan begins. None: it has begun.
+    SetPlanStart {
+        #[serde(default)]
+        starts_on: Option<NaiveDate>,
+    },
 }
 
 impl Op {
     /// Would this change what today's session shows?
     pub fn touches_plan(&self) -> bool {
         match self {
-            Op::AddClip { .. } | Op::RemoveClip { .. } | Op::SetPlanName { .. } => false,
+            Op::AddClip { .. } | Op::RemoveClip { .. } | Op::SetPlanName { .. } | Op::SetPlanStart { .. } => false,
             Op::UpdateLift { patch, .. } => patch.prescription.is_some() || patch.tags.is_some() || patch.archived.is_some(),
             _ => true,
         }
@@ -182,7 +190,13 @@ fn resolve_split(key: Option<&str>, split: Option<&Split>) -> AppResult<Split> {
     match (key, split) {
         (_, Some(s)) => {
             let mut s = s.clone();
-            if !s.key.starts_with("custom") && builtin_by_key(&s.key).is_none() {
+            // A built-in style on your own days ("ppl@012345") keeps its key, so the app still
+            // shows it as push, pull, legs, but only if it is exactly what that style makes.
+            let generated = s.key.split_once('@').is_some_and(|(style, code)| {
+                let days: Vec<u8> = code.bytes().map(|b| b.wrapping_sub(b'0')).collect();
+                gym_core::split::with_days(style, &days).as_ref() == Some(&s)
+            });
+            if !generated && !s.key.starts_with("custom") && builtin_by_key(&s.key).is_none() {
                 s.key = format!("custom:{}", s.key);
             }
             s.validate().map_err(AppError::BadRequest)?;
@@ -283,7 +297,7 @@ pub async fn apply(c: &mut PgConnection, op: &Op, actor: &Actor, cat: &Catalogue
             let prev = current.as_ref().map(|v| v.id);
             let data = match current {
                 Some(v) => PlanData { split: split.clone(), ..v.data },
-                None => PlanData { name: "Training plan".into(), split: split.clone(), block_weeks: None, block_start: None },
+                None => PlanData { name: "Training plan".into(), split: split.clone(), block_weeks: None, block_start: None, starts_on: None },
             };
             store::push_plan(c, &data, &by).await?;
             Ok(Applied { action: "switch_split", summary: format!("Switched to {}", split.name.to_lowercase()), detail: vec![split.summary.clone()], undo: Undo::RestorePlan { version_id: prev }, lift_id: None })
@@ -300,7 +314,32 @@ pub async fn apply(c: &mut PgConnection, op: &Op, actor: &Actor, cat: &Catalogue
             store::push_plan(c, &data, &by).await?;
             Ok(Applied { action: "rename_plan", summary: format!("Renamed the plan {}", data.name), detail: vec![], undo: Undo::RestorePlan { version_id: Some(prev) }, lift_id: None })
         }
+        Op::SetPlanStart { starts_on } => {
+            let current = store::current_plan(c).await?.ok_or_else(|| bad("There is no plan yet"))?;
+            let prev = current.id;
+            let mut data = current.data;
+            check_start(*starts_on, today)?;
+            data.starts_on = *starts_on;
+            if data.block_weeks.is_some() {
+                data.block_start = Some(starts_on.unwrap_or(today));
+            }
+            store::push_plan(c, &data, &by).await?;
+            let summary = match starts_on {
+                Some(d) => format!("The plan starts {}", d.format("%a %-d %b")),
+                None => "The plan starts now".to_string(),
+            };
+            Ok(Applied { action: "plan_start", summary, detail: vec![], undo: Undo::RestorePlan { version_id: Some(prev) }, lift_id: None })
+        }
         Op::WritePlan(w) => write_plan(c, w, actor, cat, today, unit).await,
+    }
+}
+
+/// A start date a year away or more is almost certainly a typo.
+fn check_start(starts_on: Option<NaiveDate>, today: NaiveDate) -> AppResult<()> {
+    match starts_on {
+        Some(d) if d > today + chrono::Duration::days(366) => Err(bad("The start date is more than a year away")),
+        Some(d) if d < today - chrono::Duration::days(366) => Err(bad("The start date is more than a year ago")),
+        _ => Ok(()),
     }
 }
 
@@ -378,14 +417,18 @@ async fn write_plan(c: &mut PgConnection, w: &WritePlan, actor: &Actor, cat: &Ca
     } else {
         builtin_by_key("ppl").expect("built in")
     };
-    let mut data = current.map(|v| v.data).unwrap_or(PlanData { name: "Training plan".into(), split: split.clone(), block_weeks: None, block_start: None });
+    let mut data = current.map(|v| v.data).unwrap_or(PlanData { name: "Training plan".into(), split: split.clone(), block_weeks: None, block_start: None, starts_on: None });
     data.split = split.clone();
     if let Some(n) = &w.name {
         data.name = n.trim().to_string();
     }
+    if w.starts_on.is_some() {
+        check_start(w.starts_on, today)?;
+        data.starts_on = w.starts_on;
+    }
     if w.block_weeks.is_some() {
         data.block_weeks = w.block_weeks;
-        data.block_start = Some(today);
+        data.block_start = Some(w.starts_on.unwrap_or(today));
     }
     store::push_plan(c, &data, &by).await?;
     undo.push(Undo::RestorePlan { version_id: prev });
@@ -452,6 +495,7 @@ async fn describe(c: &mut PgConnection, op: &Op) -> AppResult<(&'static str, Str
             ("switch_split", format!("Switch to {}", s.name.to_lowercase()), vec![s.summary])
         }
         Op::SetPlanName { name, .. } => ("rename_plan", format!("Rename the plan {name}"), vec![]),
+        Op::SetPlanStart { starts_on } => ("plan_start", starts_on.map(|d| format!("Start the plan {}", d.format("%a %-d %b"))).unwrap_or_else(|| "Start the plan now".into()), vec![]),
         Op::WritePlan(w) => (
             "write_plan",
             format!("Write {}", w.name.clone().unwrap_or_else(|| "a new plan".into())),

@@ -9,7 +9,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration, Utc};
-use gym_core::api::{Connections, MusicCommand, NowPlaying, Playlist, ProviderStatus};
+use gym_core::api::{Connections, MusicCommand, MusicDevice, NowPlaying, Playlist, ProviderStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::Owner;
@@ -253,9 +253,52 @@ pub async fn playlists(_: Owner, State(st): State<AppState>) -> AppResult<Json<V
     ))
 }
 
-/// Play, pause, skip, or start a playlist on the phone. When no device is active,
-/// the first available one (usually the phone) is used.
+async fn device_list(st: &AppState) -> AppResult<Vec<MusicDevice>> {
+    let res = spotify(st, reqwest::Method::GET, "/me/player/devices", None).await?;
+    if !res.status().is_success() {
+        return Err(AppError::Upstream(format!("Spotify said {}", res.status())));
+    }
+    let v: serde_json::Value = res.json().await.map_err(|e| AppError::Upstream(e.to_string()))?;
+    Ok(v["devices"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|d| d["is_restricted"] != true)
+                .filter_map(|d| {
+                    Some(MusicDevice {
+                        id: d["id"].as_str()?.to_string(),
+                        name: d["name"].as_str().unwrap_or("Spotify").to_string(),
+                        kind: d["type"].as_str().unwrap_or("Device").to_string(),
+                        active: d["is_active"].as_bool().unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Every Spotify app that is open: the phone, the desktop app, a browser on open.spotify.com.
+pub async fn devices(_: Owner, State(st): State<AppState>) -> AppResult<Json<Vec<MusicDevice>>> {
+    Ok(Json(device_list(&st).await?))
+}
+
+fn valid_device(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Play, pause, skip, start a playlist, or move playback to another device. Works with
+/// any Spotify app: the phone, the desktop app or open.spotify.com. With no device chosen
+/// and none playing, the one already active wins, then a computer, then a phone.
 pub async fn command(_: Owner, State(st): State<AppState>, Json(cmd): Json<MusicCommand>) -> AppResult<StatusCode> {
+    let device = cmd.device_id.clone().filter(|d| valid_device(d));
+    if cmd.device_id.is_some() && device.is_none() {
+        return Err(bad("Pick a device"));
+    }
+    if cmd.action == "transfer" {
+        let id = device.ok_or_else(|| bad("Pick a device"))?;
+        let res = spotify(&st, reqwest::Method::PUT, "/me/player", Some(serde_json::json!({ "device_ids": [id], "play": true }))).await?;
+        return spotify_result(res);
+    }
     let (method, path, body) = match cmd.action.as_str() {
         "play" => (reqwest::Method::PUT, "/me/player/play".to_string(), None),
         "pause" => (reqwest::Method::PUT, "/me/player/pause".to_string(), None),
@@ -267,28 +310,36 @@ pub async fn command(_: Owner, State(st): State<AppState>, Json(cmd): Json<Music
         }
         _ => return Err(bad("Unknown music action")),
     };
-    let res = spotify(&st, method.clone(), &path, body.clone()).await?;
-    if res.status() == StatusCode::NOT_FOUND {
+    let with = |d: &str| format!("{path}?device_id={d}");
+    let first = match &device {
+        Some(d) => with(d),
+        None => path.clone(),
+    };
+    let res = spotify(&st, method.clone(), &first, body.clone()).await?;
+    if res.status() == StatusCode::NOT_FOUND && device.is_none() {
         // NO_ACTIVE_DEVICE: pick one and retry.
-        let devices: serde_json::Value = spotify(&st, reqwest::Method::GET, "/me/player/devices", None).await?.json().await.map_err(|e| AppError::Upstream(e.to_string()))?;
-        let list = devices["devices"].as_array().cloned().unwrap_or_default();
-        let pick = list.iter().find(|d| d["type"] == "Smartphone").or(list.first()).and_then(|d| d["id"].as_str()).map(str::to_string);
+        let list = device_list(&st).await?;
+        let pick = list
+            .iter()
+            .find(|d| d.active)
+            .or_else(|| list.iter().find(|d| d.kind == "Computer"))
+            .or_else(|| list.iter().find(|d| d.kind == "Smartphone"))
+            .or(list.first())
+            .map(|d| d.id.clone());
         let Some(device) = pick else {
-            return Err(AppError::Conflict("Spotify can't see your phone. Open the Spotify app once, then try again".into()));
+            return Err(AppError::Conflict("No Spotify app is open. Open Spotify on this computer, at open.spotify.com, or on your phone, then try again".into()));
         };
-        let sep = if path.contains('?') { '&' } else { '?' };
-        let retry = spotify(&st, method, &format!("{path}{sep}device_id={device}"), body).await?;
-        if !retry.status().is_success() {
-            return Err(AppError::Upstream(format!("Spotify said {}", retry.status())));
-        }
-        return Ok(StatusCode::NO_CONTENT);
+        return spotify_result(spotify(&st, method, &with(&device), body).await?);
     }
-    if res.status() == StatusCode::FORBIDDEN {
-        return Err(AppError::Conflict("Spotify refused: remote control needs Spotify Premium".into()));
+    spotify_result(res)
+}
+
+fn spotify_result(res: reqwest::Response) -> AppResult<StatusCode> {
+    match res.status() {
+        s if s.is_success() => Ok(StatusCode::NO_CONTENT),
+        StatusCode::FORBIDDEN => Err(AppError::Conflict("Spotify refused: remote control needs Spotify Premium".into())),
+        StatusCode::NOT_FOUND => Err(AppError::Conflict("That Spotify app is not open any more. Open it and try again".into())),
+        s => Err(AppError::Upstream(format!("Spotify said {s}"))),
     }
-    if !res.status().is_success() {
-        return Err(AppError::Upstream(format!("Spotify said {}", res.status())));
-    }
-    Ok(StatusCode::NO_CONTENT)
 }
 

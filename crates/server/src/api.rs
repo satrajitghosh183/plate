@@ -186,6 +186,17 @@ pub async fn plan_meta(_: Owner, State(st): State<AppState>, Query(tz): Query<Tz
     Ok(Json(plan_now(&st, tz.today()).await?))
 }
 
+#[derive(Deserialize)]
+pub struct PlanStart {
+    #[serde(default)]
+    pub starts_on: Option<NaiveDate>,
+}
+
+pub async fn plan_start(_: Owner, State(st): State<AppState>, Query(tz): Query<Tz>, Json(b): Json<PlanStart>) -> AppResult<Json<Option<Plan>>> {
+    ops::submit(&st.db, &Actor::Owner, Op::SetPlanStart { starts_on: b.starts_on }, &st.catalogue, tz.today()).await?;
+    Ok(Json(plan_now(&st, tz.today()).await?))
+}
+
 /// The lifts from the screens, so a new install has something to train from.
 pub fn starter() -> WritePlan {
     let l = |name: &str, sets, reps, weight: f64, cues: &[&str]| PlanLift {
@@ -203,6 +214,7 @@ pub fn starter() -> WritePlan {
         split_key: Some("ppl".into()),
         split: None,
         block_weeks: Some(6),
+        starts_on: None,
         retire_others: false,
         lifts: vec![
             l("Bench press", 4, 5, 80.0, &["Shoulder blades back and down before you unrack", "Bar touches low on the chest", "Feet flat, push the floor away"]),
@@ -317,7 +329,7 @@ pub struct Days {
 pub async fn health(_: Owner, State(st): State<AppState>, Query(q): Query<Days>) -> AppResult<Json<Vec<HealthDay>>> {
     let today = local_date(Utc::now(), q.tz);
     let mut c = st.db.acquire().await?;
-    Ok(Json(store::health_days(&mut c, today - Duration::days(q.days.unwrap_or(7).clamp(1, 120) - 1), today).await?))
+    Ok(Json(store::health_days(&mut c, today - Duration::days(q.days.unwrap_or(7).clamp(1, 3660) - 1), today).await?))
 }
 
 // ---------- agents ----------

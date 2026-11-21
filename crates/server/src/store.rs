@@ -308,6 +308,9 @@ pub struct PlanData {
     pub block_weeks: Option<u32>,
     #[serde(default)]
     pub block_start: Option<NaiveDate>,
+    /// First day of the plan; weeks count from here and Today waits for it.
+    #[serde(default)]
+    pub starts_on: Option<NaiveDate>,
 }
 
 #[derive(Debug, Clone)]
@@ -382,7 +385,7 @@ pub fn plan_dto(v: &PlanVersion, lifts: &[Lift], today: NaiveDate) -> Plan {
     let active: Vec<&Lift> = lifts.iter().filter(|l| !l.archived).collect();
     let pool: Vec<PoolLift> = active.iter().map(|l| PoolLift { id: l.id, tags: l.tags.as_ref() }).collect();
     let dealt = deal(&v.data.split, &pool);
-    let block_week = match (v.data.block_start, v.data.block_weeks) {
+    let block_week = match (v.data.block_start.max(v.data.starts_on), v.data.block_weeks) {
         (Some(start), Some(weeks)) => Some((((today - start).num_days().max(0) / 7) as u32 + 1).min(weeks)),
         _ => None,
     };
@@ -393,6 +396,7 @@ pub fn plan_dto(v: &PlanVersion, lifts: &[Lift], today: NaiveDate) -> Plan {
         name: v.data.name.clone(),
         block_week,
         block_weeks: v.data.block_weeks,
+        starts_on: v.data.starts_on,
         days: v
             .data
             .split
@@ -410,6 +414,12 @@ pub fn plan_dto(v: &PlanVersion, lifts: &[Lift], today: NaiveDate) -> Plan {
 pub fn today(plan: Option<&Plan>, date: NaiveDate) -> Today {
     let wd = date.weekday().num_days_from_monday() as u8;
     let Some(plan) = plan else { return Today { day_index: None, is_rest_day: true, next_day_index: None } };
+    // Not started yet: nothing today, and "next" is the first training day on or after the start.
+    if let Some(start) = plan.starts_on.filter(|s| *s > date) {
+        let swd = start.weekday().num_days_from_monday() as u8;
+        let next = (0..7u8).map(|k| (swd + k) % 7).find_map(|w| plan.days.iter().position(|d| d.weekday == w));
+        return Today { day_index: None, is_rest_day: true, next_day_index: next };
+    }
     let idx = plan.days.iter().position(|d| d.weekday == wd);
     let next = (1..=7u8).map(|k| (wd + k) % 7).find_map(|w| plan.days.iter().position(|d| d.weekday == w));
     Today { day_index: idx, is_rest_day: idx.is_none(), next_day_index: next }
@@ -721,7 +731,7 @@ mod tests {
             previous_id: None,
             created_at: Utc::now(),
             created_by: "you".into(),
-            data: PlanData { name: "Strength base".into(), split: builtin_by_key("ppl").unwrap(), block_weeks: Some(6), block_start: NaiveDate::from_ymd_opt(2026, 11, 2) },
+            data: PlanData { name: "Strength base".into(), split: builtin_by_key("ppl").unwrap(), block_weeks: Some(6), block_start: NaiveDate::from_ymd_opt(2026, 11, 2), starts_on: None },
         };
         let plan = plan_dto(&v, &[], NaiveDate::from_ymd_opt(2026, 11, 19).unwrap());
         assert_eq!(plan.block_week, Some(3));
