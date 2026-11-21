@@ -329,6 +329,7 @@ fn TodayPane() -> impl IntoView {
     let plan = move || c.plan();
     let default_rest = move || c.data.with(|d| d.as_ref().map(|d| d.settings.rest_seconds).unwrap_or(120));
     let in_progress = move || c.session.with(|s| s.as_ref().is_some_and(|s| !s.closed && s.ended_at.is_none()));
+    let spotify = move || c.data.with(|d| d.as_ref().is_some_and(|d| d.connections.spotify.connected));
     view! {
         <div class="pc tabbed" class:on=on inert=move || !on()>
             <div class="stack g8">
@@ -378,6 +379,11 @@ fn TodayPane() -> impl IntoView {
                 }}
                 {move || (plan().is_some_and(|p| p.days.len() > 1) && !in_progress()).then(|| view! {
                     <button type="button" class="textlink" on:click=move |_| c.sheet.set(Some(Sheet::ChooseDay))>"Train a different day"</button>
+                })}
+                {move || spotify().then(|| view! {
+                    <button type="button" class="btn btn-quiet press rowx g8" style="justify-content: center" on:click=move |_| c.sheet.set(Some(Sheet::Music))>
+                        {icon(icons::MUSIC)}"Music"
+                    </button>
                 })}
             </div>
         </div>
