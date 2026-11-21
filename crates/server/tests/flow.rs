@@ -8,7 +8,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::{Duration, Utc};
 use gym_core::api::{Bootstrap, EndSession, SetEntry, StartSession, SyncSets};
-use gym_server::admin::{NewAgent, add_agent, new_phone_key};
+use gym_server::admin::{NewAgent, add_agent, new_phone_key, new_phone_key_with_overlap};
 use gym_core::{Unit, Weight};
 use gym_server::config::Config;
 use gym_server::crypto::{new_secret, sha256_hex};
@@ -82,6 +82,18 @@ impl T {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         let v = serde_json::from_slice(&bytes).unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into()));
         (status, v)
+    }
+
+    /// A POST exactly as the phone sends it: raw bytes, with whatever Content-Type (or none).
+    async fn phone(&self, path: &str, key: &str, content_type: Option<&str>, body: &str) -> (StatusCode, Value) {
+        let mut b = Request::builder().method("POST").uri(path).header("x-ingest-key", key);
+        if let Some(ct) = content_type {
+            b = b.header("content-type", ct);
+        }
+        let res = self.app.clone().oneshot(b.body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::String(String::from_utf8_lossy(&bytes).into())))
     }
 
     async fn ok(&self, method: &str, path: &str, body: Option<Value>) -> Value {
@@ -271,11 +283,7 @@ async fn the_watch_closes_the_session_once_and_numbers_attach_later() {
     let t = T::new().await;
     let (_, session, _) = with_session(&t).await;
     let k = t.phone_key().await;
-    // A run ending closes nothing.
-    let (_, v) = t.req("POST", "/ingest/workout-ended", Auth::Ingest(k.clone()), Some(Value::String("kind=Outdoor Run".into()))).await;
-    assert_eq!(v["outcome"], "Not a strength workout, so nothing changed");
-    assert!(t.bootstrap().await.open_session.is_some());
-    // The strength workout ends.
+    // The watch ends a workout (its kind is fixed in the automation, so it is not read).
     let (_, v) = t.req("POST", "/ingest/workout-ended", Auth::Ingest(k.clone()), Some(Value::String("kind=Traditional Strength Training".into()))).await;
     assert_eq!(v["outcome"], "Session closed and saved");
     let first: (Option<chrono::DateTime<Utc>>, Option<String>) = sqlx::query_as("select closed_at, close_reason from workout_sessions where id = $1").bind(session).fetch_one(&t.st.db).await.unwrap();
@@ -631,5 +639,178 @@ async fn google_sign_in_goes_to_google_and_refuses_a_forged_return() {
     assert!(set_cookie(&res, "gym_session").is_none(), "no session from a forged return");
     let res = raw(&t, Request::get(format!("/api/auth/google/callback?code=x&state={}", q["state"])).body(Body::empty()).unwrap()).await;
     assert!(set_cookie(&res, "gym_session").is_none(), "no session without the browser's own cookie");
+    t.done().await;
+}
+
+// ---------- the phone's contract: what iOS Shortcuts actually sends ----------
+
+const PHONE_BODY: &str = "date=2026-11-20\nactive_energy=412.734\ndietary_energy=2,104.5\nprotein=96.2\ncarbs=210\nfat=71.05\n";
+
+type DayRow = (Option<f64>, Option<f64>, Option<f64>, Option<f64>, Option<f64>);
+
+async fn day(t: &T, date: &str) -> Value {
+    let rows: Vec<DayRow> =
+        sqlx::query_as("select energy_burned_kcal, energy_eaten_kcal, protein_g, carbs_g, fat_g from health_days where date = $1::date").bind(date).fetch_all(&t.st.db).await.unwrap();
+    assert!(rows.len() <= 1, "one row per date, got {}", rows.len());
+    match rows.first() {
+        Some(r) => json!({"burned": r.0, "eaten": r.1, "protein": r.2, "carbs": r.3, "fat": r.4}),
+        None => Value::Null,
+    }
+}
+
+#[tokio::test]
+async fn health_takes_the_phones_exact_body_under_any_content_type() {
+    let t = T::new().await;
+    let k = t.phone_key().await;
+    for ct in [Some("text/plain"), Some("application/octet-stream"), None, Some("application/json"), Some("multipart/form-data")] {
+        let (s, v) = t.phone("/ingest/health", &k, ct, PHONE_BODY).await;
+        assert_eq!(s, StatusCode::OK, "content-type {ct:?}: {v}");
+        assert_eq!(v, json!({"ok": true, "outcome": "Saved the day's totals"}), "content-type {ct:?}");
+    }
+    assert_eq!(day(&t, "2026-11-20").await, json!({"burned": 412.734, "eaten": 2104.5, "protein": 96.2, "carbs": 210.0, "fat": 71.05}));
+    t.done().await;
+}
+
+#[tokio::test]
+async fn health_reads_thousands_separators() {
+    let t = T::new().await;
+    let k = t.phone_key().await;
+    let (s, v) = t.phone("/ingest/health", &k, None, "date=2026-11-20\nactive_energy=1,012.5\ndietary_energy=2,104\nprotein=1,000\ncarbs=96\nfat=7").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let d = day(&t, "2026-11-20").await;
+    assert_eq!((d["burned"].as_f64(), d["eaten"].as_f64(), d["protein"].as_f64()), (Some(1012.5), Some(2104.0), Some(1000.0)), "{d}");
+    t.done().await;
+}
+
+#[tokio::test]
+async fn empty_values_from_a_locked_phone_keep_what_is_stored() {
+    let t = T::new().await;
+    let k = t.phone_key().await;
+    // A fresh day with nothing logged: accepted, stored as no reading.
+    let (s, v) = t.phone("/ingest/health", &k, Some("text/plain"), "date=2026-11-21\nactive_energy=\ndietary_energy=\nprotein=\ncarbs=\nfat=\n").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({"ok": true, "outcome": "No numbers in this delivery, so nothing changed"}));
+    assert_eq!(day(&t, "2026-11-21").await, json!({"burned": null, "eaten": null, "protein": null, "carbs": null, "fat": null}));
+    // Real numbers, then the locked phone's empty and zero values after a workout.
+    t.phone("/ingest/health", &k, None, PHONE_BODY).await;
+    let (s, _) = t.phone("/ingest/health", &k, None, "date=2026-11-20\nactive_energy=\ndietary_energy=0\nprotein=\ncarbs=0\nfat=").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(day(&t, "2026-11-20").await, json!({"burned": 412.734, "eaten": 2104.5, "protein": 96.2, "carbs": 210.0, "fat": 71.05}));
+    t.done().await;
+}
+
+#[tokio::test]
+async fn repeated_deliveries_for_a_date_keep_one_row_with_the_latest_totals() {
+    let t = T::new().await;
+    let k = t.phone_key().await;
+    for (burned, eaten) in [("120", "450"), ("380.5", "1,240"), ("612", "2,104.5")] {
+        let (s, v) = t.phone("/ingest/health", &k, None, &format!("date=2026-11-20\nactive_energy={burned}\ndietary_energy={eaten}\nprotein=50\ncarbs=100\nfat=20")).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let d = day(&t, "2026-11-20").await;
+    assert_eq!((d["burned"].as_f64(), d["eaten"].as_f64()), (Some(612.0), Some(2104.5)), "{d}");
+    // A correction downwards (a food entry deleted) also wins: latest, not largest.
+    t.phone("/ingest/health", &k, None, "date=2026-11-20\ndietary_energy=1,900").await;
+    assert_eq!(day(&t, "2026-11-20").await["eaten"].as_f64(), Some(1900.0));
+    t.done().await;
+}
+
+#[tokio::test]
+async fn health_refuses_a_malformed_body_with_400_and_a_bad_key_with_401() {
+    let t = T::new().await;
+    let k = t.phone_key().await;
+    for body in ["active_energy=412\ndietary_energy=2104\nprotein=96\ncarbs=210\nfat=71", "", "hello", "date=yesterday\nprotein=96", "date=\nprotein=96"] {
+        let (s, v) = t.phone("/ingest/health", &k, Some("text/plain"), body).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "body {body:?}: {v}");
+    }
+    let (s, v) = t.phone("/ingest/health", &k, None, "protein=96").await;
+    assert!(v.to_string().contains("date"), "the 400 says what is missing: {v}");
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = t.phone("/ingest/health", "phone_wrong", None, PHONE_BODY).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = t.phone("/ingest/health", "", None, PHONE_BODY).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(day(&t, "2026-11-20").await, Value::Null, "nothing was saved by a refused call");
+    t.done().await;
+}
+
+#[tokio::test]
+async fn a_tennis_match_ending_is_accepted_and_nothing_trusts_its_kind() {
+    let t = T::new().await;
+    let k = t.phone_key().await;
+    // No session open: the ping (really tennis, saying strength) is accepted, changes nothing.
+    let (s, v) = t.phone("/ingest/workout-ended", &k, Some("application/json"), r#"{"kind":"Traditional Strength Training"}"#).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({"ok": true, "outcome": "No open session to close"}));
+    // Lifting, then a run: the run's ping closes the lifting at its last set, not at the ping.
+    let (_, session, sets) = with_session(&t).await;
+    let (s, v) = t.phone("/ingest/workout-ended", &k, Some("application/json"), r#"{"kind":"Traditional Strength Training"}"#).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["outcome"], "Session closed and saved");
+    let (closed,): (Option<chrono::DateTime<Utc>>,) = sqlx::query_as("select closed_at from workout_sessions where id = $1").bind(session).fetch_one(&t.st.db).await.unwrap();
+    let last_set = sets.iter().map(|s| s.logged_at).max().unwrap();
+    assert_eq!(closed.map(|c| c.timestamp()), Some(last_set.timestamp()), "closed at the last set, not the ping time");
+    // Each ping is recorded with a server timestamp and the kind marked unreliable.
+    let rows: Vec<(chrono::DateTime<Utc>, Value)> = sqlx::query_as("select received_at, detail from close_signals where kind = 'workout_ended' order by id").fetch_all(&t.st.db).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|(at, d)| d["kind_reliable"] == json!(false) && (Utc::now() - *at).num_minutes() < 5), "{rows:?}");
+    t.done().await;
+}
+
+#[tokio::test]
+async fn a_rotated_key_overlaps_for_a_day_then_stops() {
+    let t = T::new().await;
+    let old = t.phone_key().await;
+    let new = new_phone_key_with_overlap(&t.st.db, &t.st.cfg, 24).await.unwrap().key;
+    for k in [&old, &new] {
+        let (s, v) = t.phone("/ingest/health", k, None, PHONE_BODY).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    // The overlap ends.
+    let ended = (Utc::now() - Duration::minutes(1)).to_rfc3339();
+    let n = sqlx::query("update settings set value = jsonb_set(value, '{until}', to_jsonb($1::text)) where key = 'ingest_key_prev'").bind(&ended).execute(&t.st.db).await.unwrap();
+    assert_eq!(n.rows_affected(), 1, "the overlap was stored");
+    let (s, _) = t.phone("/ingest/health", &old, None, PHONE_BODY).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "the old key stops after the overlap");
+    let (s, _) = t.phone("/ingest/health", &new, None, PHONE_BODY).await;
+    assert_eq!(s, StatusCode::OK);
+    // --now: no overlap at all.
+    let newer = new_phone_key_with_overlap(&t.st.db, &t.st.cfg, 0).await.unwrap().key;
+    let (s, _) = t.phone("/ingest/health", &new, None, PHONE_BODY).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = t.phone("/ingest/health", &newer, None, PHONE_BODY).await;
+    assert_eq!(s, StatusCode::OK);
+    t.done().await;
+}
+
+/// Everything the server logs at every level, while the phone calls it.
+#[derive(Clone, Default)]
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn the_phone_key_never_reaches_the_logs() {
+    let t = T::new().await;
+    let k = t.phone_key().await;
+    let buf = Captured::default();
+    let w = buf.clone();
+    let sub = tracing_subscriber::fmt().with_max_level(tracing::Level::TRACE).with_ansi(false).with_writer(move || w.clone()).finish();
+    let _guard = tracing::subscriber::set_default(sub);
+    t.phone("/ingest/health", &k, None, PHONE_BODY).await;
+    t.phone("/ingest/workout-ended", &k, Some("application/json"), r#"{"kind":"Traditional Strength Training"}"#).await;
+    t.phone("/ingest/health", &format!("{k}x"), None, PHONE_BODY).await;
+    drop(_guard);
+    let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("/ingest/health") && logs.contains("workout ended"), "the capture saw the requests:\n{logs}");
+    assert!(!logs.contains(&k[6..]), "the key appeared in the logs");
     t.done().await;
 }

@@ -139,6 +139,8 @@ pub fn spawn_housekeeping(st: AppState) {
             if closed {
                 let _ = ops::flush_queued(&st.db, &st.catalogue, now.date_naive()).await;
             }
+            // Kept out of the phone's request path, so a cold-started call does no extra work.
+            let _ = sqlx::query("delete from close_signals where received_at < now() - interval '60 days'").execute(&st.db).await;
             let _ = sqlx::query("delete from strava_activities where fetched_at < now() - interval '7 days' or start_at < now() - interval '7 days'").execute(&st.db).await;
         }
     });

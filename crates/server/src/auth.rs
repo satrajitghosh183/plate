@@ -494,12 +494,25 @@ impl FromRequestParts<AppState> for Ingest {
 
     async fn from_request_parts(parts: &mut Parts, st: &AppState) -> Result<Self, Self::Rejection> {
         let key = parts.headers.get("x-ingest-key").and_then(|v| v.to_str().ok()).map(str::to_string).or_else(|| bearer(&parts.headers)).ok_or(AppError::Unauthorized)?;
-        let mut c = st.db.acquire().await?;
-        let stored: Option<String> = crate::store::get_setting(&mut c, "ingest_key_hash").await?;
-        match stored {
-            Some(h) if constant_time_eq(&h, &sha256_hex(key.trim())) => Ok(Ingest),
-            _ => Err(AppError::Unauthorized),
+        // One query for the current key and, during a rotation, the previous one.
+        let rows: Vec<(String, sqlx::types::Json<serde_json::Value>)> =
+            sqlx::query_as("select key, value from settings where key in ('ingest_key_hash', 'ingest_key_prev')").fetch_all(&st.db).await?;
+        let given = sha256_hex(key.trim());
+        let mut ok = false;
+        for (name, sqlx::types::Json(v)) in rows {
+            let hash = match name.as_str() {
+                "ingest_key_hash" => v.as_str().map(str::to_string),
+                _ => {
+                    let live = v.get("until").and_then(|u| u.as_str()).and_then(|u| u.parse::<chrono::DateTime<chrono::Utc>>().ok()).is_some_and(|u| u > chrono::Utc::now());
+                    v.get("hash").and_then(|h| h.as_str()).filter(|_| live).map(str::to_string)
+                }
+            };
+            // Compare every candidate, so timing does not show which one matched.
+            if let Some(h) = hash {
+                ok |= constant_time_eq(&h, &given);
+            }
         }
+        if ok { Ok(Ingest) } else { Err(AppError::Unauthorized) }
     }
 }
 

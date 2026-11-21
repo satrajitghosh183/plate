@@ -13,7 +13,8 @@ const USAGE: &str = "plate: the Plate server and its setup commands
 
   plate                      run the server
   plate status               what is connected
-  plate phone-key            new key for the iPhone's Apple Health shortcuts (old key stops working)
+  plate phone-key            new key for the iPhone's shortcuts; the old key works 24 more hours
+  plate phone-key --now      the same, but the old key stops working at once
   plate agent add <name>     new link for an agent such as Muse (shown once)
   plate agent list           agents and when they were last used
   plate agent revoke <name>  stop an agent's link working
@@ -72,9 +73,12 @@ async fn command(words: &[&str]) -> anyhow::Result<()> {
                 println!("{line}");
             }
         }
-        ["phone-key"] => {
-            let k = gym_server::admin::new_phone_key(&db, &cfg).await?;
-            println!("New phone key (shown once; the old one no longer works):\n\n  {}\n", k.key);
+        ["phone-key"] | ["phone-key", "--now"] => {
+            let now = words.len() == 2;
+            let hours = if now { 0 } else { gym_server::admin::PHONE_KEY_OVERLAP_HOURS };
+            let k = gym_server::admin::new_phone_key_with_overlap(&db, &cfg, hours).await?;
+            let old = if now { "the old one no longer works".to_string() } else { format!("the old one keeps working for {hours} hours") };
+            println!("New phone key (shown once; {old}):\n\n  {}\n", k.key);
             println!("Shortcuts send it in a header named x-ingest-key to:");
             println!("  when a workout ends:  POST {}", k.workout_ended_url);
             println!("  every evening:        POST {}", k.health_url);

@@ -1,17 +1,20 @@
 //! Data posted by iPhone Shortcuts automations with the write-only key.
 //!
-//! - `POST /ingest/workout-ended` when an Apple Watch workout ends (closes the session).
-//! - `POST /ingest/health` with a day's totals and any finished workouts (usually each evening).
+//! - `POST /ingest/workout-ended` when any Apple Watch workout ends. Its `kind` is fixed in
+//!   the automation and says nothing, so it is logged and never used: the ping means only
+//!   "a workout just ended" and closes the open session at its last set.
+//! - `POST /ingest/health` with a day's totals (and, if a phone can send them, workouts).
+//!   Called at 21:30 and after every workout, so many times a day for the same date.
 //!
-//! Shortcuts builds JSON poorly, so both also accept plain `key=value` lines.
+//! The Content-Type is never trusted: both read the raw body, JSON or `key=value` lines.
 
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::HeaderMap;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use gym_core::api::{HealthDay, WorkoutNumbers};
 use gym_core::session::{Signal, is_strength_kind};
+use tracing::info;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json as SqlJson;
 
@@ -154,6 +157,9 @@ pub fn parse_health(body: &str) -> Result<HealthIn, String> {
             let Some((k, v)) = line.split_once('=').or_else(|| line.split_once(':')) else { continue };
             map.push((k.trim().to_ascii_lowercase().replace([' ', '-'], "_"), v.trim().to_string()));
         }
+        if map.is_empty() {
+            return Err("The body had no key=value lines. Send date=YYYY-MM-DD and the totals, one per line".into());
+        }
     }
     let get = |names: &[&str]| map.iter().rev().find(|(k, _)| names.contains(&k.as_str())).map(|(_, v)| v.clone());
     let tz = get(&["tz", "timezone", "offset"]).and_then(|s| parse_offset(&s));
@@ -187,7 +193,9 @@ pub fn parse_health(body: &str) -> Result<HealthIn, String> {
 
     let day = match get(&["date", "day"]) {
         Some(d) => {
-            let date = NaiveDate::parse_from_str(d.trim().get(..10).unwrap_or(""), "%Y-%m-%d").map_err(|_| format!("Could not read the date {d}. Use YYYY-MM-DD"))?;
+            let date = NaiveDate::parse_from_str(d.trim().get(..10).unwrap_or(""), "%Y-%m-%d").map_err(|_| format!("Could not read the date {d:?}. Use date=YYYY-MM-DD"))?;
+            // An empty value ("protein=") is no reading, not zero: None, and the store keeps
+            // what it had. A locked phone sends exactly that after a workout.
             let n = |names: &[&str]| get(names).and_then(|v| parse_number(&v)).filter(|v| *v >= 0.0 && *v < 100_000.0);
             Some(HealthDay {
                 date,
@@ -201,14 +209,13 @@ pub fn parse_health(body: &str) -> Result<HealthIn, String> {
         None => None,
     };
     if day.is_none() && workouts.is_empty() {
-        return Err("Nothing to save: send a date with totals, or workouts".into());
+        return Err("Missing the date line. Send date=YYYY-MM-DD with the totals".into());
     }
     Ok(HealthIn { day, workouts })
 }
 
 async fn log_signal(st: &AppState, kind: &str, detail: serde_json::Value, outcome: &str) -> AppResult<()> {
     sqlx::query("insert into close_signals (kind, detail, outcome) values ($1, $2, $3)").bind(kind).bind(SqlJson(detail)).bind(outcome).execute(&st.db).await?;
-    sqlx::query("delete from close_signals where received_at < now() - interval '60 days'").execute(&st.db).await?;
     Ok(())
 }
 
@@ -256,14 +263,23 @@ pub async fn health(_: Ingest, State(st): State<AppState>, body: Bytes) -> AppRe
     if outcomes.iter().any(|o| o.ends_with("closed")) {
         ops::flush_queued(&st.db, &st.catalogue, Utc::now().date_naive()).await?;
     }
-    let outcome = if outcomes.is_empty() { "Saved the day's totals".to_string() } else { format!("Saved. {}", outcomes.join("; ")) };
+    let has_numbers = parsed.day.as_ref().is_some_and(|d| {
+        [d.energy_burned_kcal, d.energy_eaten_kcal, d.protein_g, d.carbs_g, d.fat_g].iter().any(|v| v.is_some_and(|v| v > 0.0))
+    });
+    let outcome = match (outcomes.is_empty(), has_numbers) {
+        (true, true) => "Saved the day's totals".to_string(),
+        // Health could not be read (phone locked) or nothing logged yet: keep what is stored.
+        (true, false) => "No numbers in this delivery, so nothing changed".to_string(),
+        (false, _) => format!("Saved. {}", outcomes.join("; ")),
+    };
     log_signal(&st, "health", serde_json::json!({"workouts": parsed.workouts.len(), "day": parsed.day.as_ref().map(|d| d.date)}), &outcome).await?;
     Ok(Json(IngestReply { ok: true, outcome }))
 }
 
-/// The Shortcuts automation on "Apple Watch Workout ends". The body is optional:
-/// `kind=Traditional Strength Training` and `at=<ISO time>` when available.
-pub async fn workout_ended(_: Ingest, State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> AppResult<Json<IngestReply>> {
+/// The Shortcuts automation on "Apple Watch Workout ends". It fires for every workout
+/// (strength, tennis, runs) and always sends the same `kind`, so `kind` is logged as
+/// unreliable and nothing depends on it. An optional `at=<ISO time>` is honoured.
+pub async fn workout_ended(_: Ingest, State(st): State<AppState>, body: Bytes) -> AppResult<Json<IngestReply>> {
     let text = std::str::from_utf8(&body).unwrap_or_default().trim().to_string();
     let mut kind: Option<String> = None;
     let mut at: Option<DateTime<Utc>> = None;
@@ -285,22 +301,21 @@ pub async fn workout_ended(_: Ingest, State(st): State<AppState>, headers: Heade
             }
         }
     }
-    let _ = headers;
-    let at = at.filter(|t| (*t - Utc::now()).num_minutes().abs() < 24 * 60).unwrap_or_else(Utc::now);
-    let strength = kind.as_deref().map(is_strength_kind).unwrap_or(true);
+    let received = Utc::now();
+    let at = at.filter(|t| (*t - received).num_minutes().abs() < 24 * 60).unwrap_or(received);
+    info!(kind = kind.as_deref().unwrap_or(""), "workout ended (kind is fixed in the automation; not used)");
     let mut tx = st.db.begin().await?;
-    let (_, outcome) = store::apply_signal(&mut tx, &Signal::WorkoutEnded { at, strength }).await?;
+    let (_, outcome) = store::apply_signal(&mut tx, &Signal::WorkoutEnded { at }).await?;
     tx.commit().await?;
     if outcome == "closed" {
-        ops::flush_queued(&st.db, &st.catalogue, Utc::now().date_naive()).await?;
+        ops::flush_queued(&st.db, &st.catalogue, received.date_naive()).await?;
     }
     let msg = match outcome {
         "closed" => "Session closed and saved".to_string(),
-        "ignored" if !strength => "Not a strength workout, so nothing changed".to_string(),
         "ignored" => "No open session to close".to_string(),
         other => other.to_string(),
     };
-    log_signal(&st, "workout_ended", serde_json::json!({"kind": kind, "at": at}), &msg).await?;
+    log_signal(&st, "workout_ended", serde_json::json!({"kind": kind, "kind_reliable": false, "at": at, "received_at": received}), &msg).await?;
     Ok(Json(IngestReply { ok: true, outcome: msg }))
 }
 
@@ -350,7 +365,31 @@ mod tests {
     }
 
     #[test]
+    fn the_phones_exact_body() {
+        let h = parse_health("date=2026-11-20\nactive_energy=412.734\ndietary_energy=2,104.5\nprotein=96.2\ncarbs=210\nfat=71.05\n").unwrap();
+        let d = h.day.unwrap();
+        assert_eq!(d.date.to_string(), "2026-11-20");
+        assert_eq!((d.energy_burned_kcal, d.energy_eaten_kcal, d.protein_g, d.carbs_g, d.fat_g), (Some(412.734), Some(2104.5), Some(96.2), Some(210.0), Some(71.05)));
+        assert!(h.workouts.is_empty());
+    }
+
+    #[test]
+    fn empty_values_are_no_reading() {
+        let d = parse_health("date=2026-11-20\nactive_energy=\ndietary_energy=\nprotein=0\ncarbs=\nfat=").unwrap().day.unwrap();
+        assert_eq!((d.energy_burned_kcal, d.energy_eaten_kcal, d.carbs_g, d.fat_g), (None, None, None, None));
+        assert_eq!(d.protein_g, Some(0.0), "0 parses as 0; the store refuses to let it replace a number");
+    }
+
+    #[test]
+    fn crlf_and_trailing_blank_lines() {
+        let d = parse_health("date=2026-11-20\r\nprotein=96\r\n\r\n").unwrap().day.unwrap();
+        assert_eq!(d.protein_g, Some(96.0));
+    }
+
+    #[test]
     fn refuses_nonsense() {
+        assert!(parse_health("").unwrap_err().contains("no key=value"));
+        assert!(parse_health("active_energy=412\nprotein=96").unwrap_err().contains("date"));
         assert!(parse_health("hello").is_err());
         assert!(parse_health("date=yesterday").is_err());
         assert!(parse_health("workout=Run|2026-11-19T18:00:00Z|2026-11-19T17:00:00Z").is_err());

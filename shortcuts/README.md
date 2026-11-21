@@ -3,14 +3,19 @@
 Apple has no web API for Health, so the iPhone sends the data itself. Two personal
 automations in the Shortcuts app do it. Both use the **phone key**, made on the server with
 `scripts/plate.sh phone-key` (the app has no screen for it). That key can only send data. It
-cannot read anything, and making a new one stops the old one at once.
+cannot read anything. Making a new one leaves the old one working for 24 hours, so you can
+update both shortcuts; `scripts/plate.sh phone-key --now` stops the old one at once.
 
 Replace `API` below with the backend's address (for example `https://plate-api-acbv.onrender.com`)
 and `KEY` with the phone key.
 
-## 1. When a strength workout ends
+## 1. When a workout ends
 
-This closes the session in the app and saves it, with no tap.
+This closes the session in the app and saves it, with no tap. The trigger may include every
+workout type. Shortcuts cannot say which workout ended, so the server ignores `kind` and
+treats the call as "a workout just ended": it closes an open session at its **last logged
+set**, so a run or tennis after lifting never stretches the session. With no session open
+it changes nothing.
 
 1. Shortcuts › Automation › **+** › **Apple Watch Workout**.
 2. Choose **Ends**. Under workout types, choose your strength types
@@ -21,17 +26,10 @@ This closes the session in the app and saves it, with no tap.
    - URL: `API/ingest/workout-ended`
    - Method: **POST**
    - Headers: `x-ingest-key` = `KEY`
-   - Request Body: **Text**, `kind=Traditional Strength Training`
-5. Optional, so the numbers arrive right away instead of in the evening: before the URL
-   action, add **Find Health Samples** › Workouts, sorted by end date, limit 1, and build
-   a text body with one more line:
-
-   ```
-   kind=Traditional Strength Training
-   ```
-
-   then a second **Get Contents of URL** to `API/ingest/health` with the evening format below.
-   This only works if Apple Health can be read at that moment, which needs the phone unlocked.
+   - Request Body: **JSON**, one field `kind` = `Traditional Strength Training` (any value works)
+5. Optional, so the numbers arrive right away: add **Run Shortcut** › *Plate · Send today*
+   (the evening shortcut below, saved as its own shortcut). A locked phone cannot read Health
+   and sends empty values; the server keeps what it had, and the evening run fills it in.
 
 ## 2. Every evening
 
@@ -46,8 +44,9 @@ workouts. It catches anything the first automation could not read while the phon
    - Protein
    - Carbohydrates
    - Total Fat
-3. Add **Find Health Samples** › Workouts, "Start Date is today".
-4. Add **Repeat with Each** over the workouts and build one line per workout with **Text**:
+3. Optional, only if your iPhone offers Workouts in Find Health Samples (some don't; the
+   server never needs these lines): **Find Health Samples** › Workouts, "Start Date is today".
+4. Then **Repeat with Each** over the workouts and build one line per workout with **Text**:
 
    ```
    workout=Repeat Item.Type|Repeat Item.Start Date|Repeat Item.End Date|Repeat Item.Active Energy|Repeat Item.Average Heart Rate|Repeat Item.Max Heart Rate
@@ -85,8 +84,11 @@ and either decimal mark: `1,420`, `1.234,5`, `412 kcal` all work.
 | `workout` | | `kind|start|end|kcal|avg_hr|max_hr` |
 | `tz` | `timezone` | Offset for times written without one, e.g. `+01:00` |
 
-A zero or missing number never replaces a number already stored for that day. Lifesum can
-blank old days when its diary is browsed, so the app keeps what it already had.
+The Content-Type does not matter (text, file, octet-stream or none). Many deliveries a day for
+the same date are expected: the latest non-zero value of each total wins, so corrections
+downwards are kept. An empty, zero or missing value never replaces a stored number: a locked
+phone sends empties, and Lifesum can blank old days when its diary is browsed. A body without
+a readable `date=YYYY-MM-DD` line is refused with 400 and the reason.
 
 ## Check it worked
 

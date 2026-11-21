@@ -1,8 +1,9 @@
 //! What closes a session (SPEC section 5).
 //!
 //! The first close signal to arrive closes the session. Anything later only
-//! attaches its numbers. A workout that does not overlap the session in time, or
-//! is not a strength workout, changes nothing.
+//! attaches its numbers. A workout record that does not overlap the session in time,
+//! or is not a strength workout, changes nothing. The watch ping has no kind (Shortcuts
+//! cannot pass it), so it closes the open session at its last set.
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -76,8 +77,9 @@ impl SessionWindow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Signal {
-    /// The Shortcuts "Apple Watch Workout ends" automation.
-    WorkoutEnded { at: DateTime<Utc>, strength: bool },
+    /// The Shortcuts "Apple Watch Workout ends" automation. It fires for every workout
+    /// type and cannot say which one, so it carries no kind: it only means "a workout ended".
+    WorkoutEnded { at: DateTime<Utc> },
     /// A finished workout with its numbers, from the same or the evening automation.
     WorkoutRecord { start: DateTime<Utc>, end: DateTime<Utc>, strength: bool },
     Tap { at: DateTime<Utc> },
@@ -96,15 +98,17 @@ pub enum Decision {
 pub fn decide(s: &SessionWindow, signal: &Signal) -> Decision {
     let open = s.closed_at.is_none();
     match *signal {
-        Signal::WorkoutEnded { at, strength } => {
-            if !strength || !open || at < s.started_at - Duration::minutes(LEAD_MINUTES) {
+        Signal::WorkoutEnded { at } => {
+            if !open || at < s.started_at - Duration::minutes(LEAD_MINUTES) {
                 return Decision::Ignore;
             }
             // A ping long after the session went quiet is the next workout, not this one.
             if at > s.last_activity() + Duration::minutes(TAIL_MINUTES + IDLE_MINUTES) {
                 return Decision::Ignore;
             }
-            Decision::Close { at: at.max(s.last_activity()), reason: CloseReason::Watch, attach: false }
+            // The ping may be a run or tennis after the lifting, so its time says nothing
+            // about when the lifting stopped. The last logged set does.
+            Decision::Close { at: s.last_activity(), reason: CloseReason::Watch, attach: false }
         }
         Signal::WorkoutRecord { start, end, strength } => {
             if !strength || !s.overlaps(start, end) {
@@ -155,13 +159,12 @@ mod tests {
 
     #[test]
     fn watch_ping_closes_an_open_session() {
-        let d = decide(&open(), &Signal::WorkoutEnded { at: t(18, 54), strength: true });
-        assert_eq!(d, Decision::Close { at: t(18, 54), reason: CloseReason::Watch, attach: false });
+        let d = decide(&open(), &Signal::WorkoutEnded { at: t(18, 54) });
+        assert_eq!(d, Decision::Close { at: open().last_activity(), reason: CloseReason::Watch, attach: false });
     }
 
     #[test]
-    fn a_run_closes_nothing() {
-        assert_eq!(decide(&open(), &Signal::WorkoutEnded { at: t(18, 54), strength: false }), Decision::Ignore);
+    fn a_run_record_closes_nothing() {
         assert_eq!(decide(&open(), &Signal::WorkoutRecord { start: t(18, 0), end: t(18, 54), strength: false }), Decision::Ignore);
         assert!(!is_strength_kind("Outdoor Run"));
         assert!(is_strength_kind("Traditional Strength Training"));
@@ -169,12 +172,19 @@ mod tests {
     }
 
     #[test]
+    fn a_run_after_lifting_closes_at_the_last_set_not_the_run_end() {
+        // Lifting 18:00–18:50, then a 60-minute run whose end pings at 19:55.
+        let d = decide(&open(), &Signal::WorkoutEnded { at: t(19, 55) });
+        assert_eq!(d, Decision::Close { at: t(18, 50), reason: CloseReason::Watch, attach: false });
+    }
+
+    #[test]
     fn second_signal_is_a_no_op() {
         let mut s = open();
-        let first = decide(&s, &Signal::WorkoutEnded { at: t(18, 54), strength: true });
+        let first = decide(&s, &Signal::WorkoutEnded { at: t(18, 54) });
         let Decision::Close { at, .. } = first else { panic!("{first:?}") };
         s.closed_at = Some(at);
-        assert_eq!(decide(&s, &Signal::WorkoutEnded { at: t(18, 55), strength: true }), Decision::Ignore);
+        assert_eq!(decide(&s, &Signal::WorkoutEnded { at: t(18, 55) }), Decision::Ignore);
         assert_eq!(decide(&s, &Signal::Tap { at: t(19, 0) }), Decision::Ignore);
         assert_eq!(decide(&s, &Signal::Idle { now: t(23, 0) }), Decision::Ignore);
         // The evening automation still attaches the numbers.
@@ -205,6 +215,6 @@ mod tests {
 
     #[test]
     fn stale_ping_is_ignored() {
-        assert_eq!(decide(&open(), &Signal::WorkoutEnded { at: t(23, 30), strength: true }), Decision::Ignore);
+        assert_eq!(decide(&open(), &Signal::WorkoutEnded { at: t(23, 30) }), Decision::Ignore);
     }
 }

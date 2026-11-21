@@ -27,12 +27,33 @@ pub struct PhoneKey {
     pub health_url: String,
 }
 
-/// Make a new phone key. The old one stops working at once.
-pub async fn new_phone_key(db: &PgPool, cfg: &Config) -> anyhow::Result<PhoneKey> {
+/// How long the previous phone key keeps working after a new one is made, so the
+/// shortcuts can be updated one at a time. `plate phone-key --now` skips the overlap.
+pub const PHONE_KEY_OVERLAP_HOURS: i64 = 24;
+
+/// Make a new phone key. The old one keeps working for `overlap_hours` (0: stops at once).
+/// Only hashes are stored; the key itself is shown once and never kept or logged.
+pub async fn new_phone_key_with_overlap(db: &PgPool, cfg: &Config, overlap_hours: i64) -> anyhow::Result<PhoneKey> {
     let key = new_secret("phone");
-    let mut c = db.acquire().await?;
-    crate::store::set_setting(&mut c, "ingest_key_hash", &sha256_hex(&key)).await.map_err(|e| anyhow!(e.message()))?;
+    let mut tx = db.begin().await?;
+    let old: Option<String> = crate::store::get_setting(&mut tx, "ingest_key_hash").await.map_err(|e| anyhow!(e.message()))?;
+    match old {
+        Some(h) if overlap_hours > 0 => {
+            let until = Utc::now() + chrono::Duration::hours(overlap_hours);
+            crate::store::set_setting(&mut tx, "ingest_key_prev", &serde_json::json!({"hash": h, "until": until})).await.map_err(|e| anyhow!(e.message()))?;
+        }
+        _ => {
+            sqlx::query("delete from settings where key = 'ingest_key_prev'").execute(&mut *tx).await?;
+        }
+    }
+    crate::store::set_setting(&mut tx, "ingest_key_hash", &sha256_hex(&key)).await.map_err(|e| anyhow!(e.message()))?;
+    tx.commit().await?;
     Ok(PhoneKey { key, workout_ended_url: cfg.public_link("/ingest/workout-ended"), health_url: cfg.public_link("/ingest/health") })
+}
+
+/// Make a new phone key; the old one stops working at once.
+pub async fn new_phone_key(db: &PgPool, cfg: &Config) -> anyhow::Result<PhoneKey> {
+    new_phone_key_with_overlap(db, cfg, 0).await
 }
 
 pub struct NewAgent {
@@ -217,6 +238,8 @@ pub async fn status(db: &PgPool) -> anyhow::Result<Vec<String>> {
         sessions.0
     ));
     let key: Option<(serde_json::Value,)> = sqlx::query_as("select value from settings where key = 'ingest_key_hash'").fetch_optional(db).await?;
+    let prev: Option<(serde_json::Value,)> = sqlx::query_as("select value from settings where key = 'ingest_key_prev'").fetch_optional(db).await?;
+    let prev_until = prev.and_then(|p| p.0.get("until").and_then(|u| u.as_str()).and_then(|u| u.parse::<DateTime<Utc>>().ok())).filter(|t| *t > Utc::now());
     let last: (Option<DateTime<Utc>>,) = sqlx::query_as(
         "select greatest((select max(updated_at) from health_days), (select max(received_at) from health_workouts), (select max(received_at) from close_signals))",
     )
@@ -224,7 +247,11 @@ pub async fn status(db: &PgPool) -> anyhow::Result<Vec<String>> {
     .await?;
     out.push(format!(
         "Apple Health and Lifesum: {}{}",
-        if key.is_some() { "phone key set" } else { "no phone key yet (run: plate phone-key)" },
+        match (key.is_some(), prev_until) {
+            (true, Some(t)) => format!("phone key set (the previous key also works until {})", t.format("%Y-%m-%d %H:%M UTC")),
+            (true, None) => "phone key set".to_string(),
+            (false, _) => "no phone key yet (run: plate phone-key)".to_string(),
+        },
         last.0.map(|t| format!(", last delivery {}", t.format("%Y-%m-%d %H:%M UTC"))).unwrap_or_default()
     ));
     for p in [Provider::Strava, Provider::Spotify] {
