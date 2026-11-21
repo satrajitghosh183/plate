@@ -969,3 +969,33 @@ async fn a_plan_can_start_on_a_later_day() {
     assert!(p["starts_on"].is_null());
     t.done().await;
 }
+
+#[tokio::test]
+async fn past_days_load_from_an_apple_health_export() {
+    use std::io::Write;
+    let t = T::new().await;
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<HealthData locale="en_US">
+ <Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed" sourceName="Lifesum" unit="kcal" startDate="2025-03-02 08:00:00 +0000" endDate="2025-03-02 08:00:00 +0000" value="2100"/>
+ <Record type="HKQuantityTypeIdentifierDietaryProtein" sourceName="Lifesum" unit="g" startDate="2025-03-02 08:00:00 +0000" endDate="2025-03-02 08:00:00 +0000" value="150"/>
+ <Record type="HKQuantityTypeIdentifierActiveEnergyBurned" sourceName="Apple Watch" unit="kcal" startDate="2025-03-03 09:00:00 +0000" endDate="2025-03-03 09:10:00 +0000" value="80"/>
+</HealthData>"#;
+    let dir = std::env::temp_dir().join(format!("plate-import-{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("export.zip");
+    {
+        let f = std::fs::File::create(&path).unwrap();
+        let mut z = zip::ZipWriter::new(f);
+        z.start_file("apple_health_export/export.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(xml.as_bytes()).unwrap();
+        z.finish().unwrap();
+    }
+    let (n, first, last, samples) = gym_server::admin::import_health(&t.st.db, &path, None).await.unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!((n, samples), (2, 3));
+    assert_eq!((first.to_string(), last.to_string()), ("2025-03-02".into(), "2025-03-03".into()));
+    let v = t.ok("GET", "/api/health?days=3660", None).await;
+    let day = v.as_array().unwrap().iter().find(|d| d["date"] == "2025-03-02").expect("the old day is served");
+    assert_eq!((day["energy_eaten_kcal"].as_f64(), day["protein_g"].as_f64()), (Some(2100.0), Some(150.0)));
+    t.done().await;
+}

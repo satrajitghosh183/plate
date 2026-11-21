@@ -111,6 +111,23 @@ pub async fn revoke_agent(db: &PgPool, name: &str) -> anyhow::Result<u64> {
     Ok(ids.len() as u64)
 }
 
+/// Load past days from an Apple Health export into the day totals. Returns
+/// (days saved, first day, last day, samples read).
+pub async fn import_health(db: &PgPool, path: &std::path::Path, since: Option<chrono::NaiveDate>) -> anyhow::Result<(usize, chrono::NaiveDate, chrono::NaiveDate, u64)> {
+    let path = path.to_path_buf();
+    // Parsing a large export is slow, blocking work: keep it off the async runtime.
+    let summary = tokio::task::spawn_blocking(move || crate::health_import::read_file(&path)).await??;
+    let samples = summary.samples;
+    let days = crate::health_import::keep(summary, since, Utc::now().date_naive() + chrono::Duration::days(1))?;
+    let (first, last) = (days.first().map(|d| d.date).expect("not empty"), days.last().map(|d| d.date).expect("not empty"));
+    let mut tx = db.begin().await?;
+    for d in &days {
+        crate::store::merge_health_day(&mut tx, d).await.map_err(|e| anyhow!(e.message()))?;
+    }
+    tx.commit().await?;
+    Ok((days.len(), first, last, samples))
+}
+
 fn env(name: &str) -> anyhow::Result<String> {
     std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).with_context(|| format!("{name} is not set. Add it to your .env"))
 }

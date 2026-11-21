@@ -7,6 +7,7 @@ pub mod clips;
 pub mod config;
 pub mod crypto;
 pub mod error;
+pub mod health_import;
 pub mod ingest;
 pub mod mcp;
 pub mod ops;

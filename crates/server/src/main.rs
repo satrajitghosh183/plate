@@ -23,7 +23,9 @@ const USAGE: &str = "plate: the Plate server and its setup commands
   plate login password       set or change the password (typed, not shown)
   plate login google         switch on Google sign-in (GOOGLE_CLIENT_ID/SECRET from .env)
   plate login off password|google
-  plate logout-everywhere    sign out every device";
+  plate logout-everywhere    sign out every device
+  plate import-health <export.zip> [--since YYYY-MM-DD]
+                             load past days from Apple Health's \"Export All Health Data\" file";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -128,6 +130,17 @@ async fn command(words: &[&str]) -> anyhow::Result<()> {
         ["login", "off", which] => {
             gym_server::admin::sign_in_off(&db, which).await?;
             println!("{which} sign-in is off.");
+        }
+        ["import-health", file, rest @ ..] => {
+            let since = match rest {
+                [] => None,
+                ["--since", d] => Some(chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| anyhow::anyhow!("Write the date as YYYY-MM-DD"))?),
+                _ => anyhow::bail!("Use: plate import-health <export.zip> [--since YYYY-MM-DD]"),
+            };
+            println!("Reading {file} (a large export can take a minute)…");
+            let (n, first, last, samples) = gym_server::admin::import_health(&db, std::path::Path::new(file), since).await?;
+            println!("Saved {n} days, {first} to {last}, from {samples} Apple Health samples.");
+            println!("Food and active energy only. A day already saved keeps any number the export lacks.");
         }
         ["logout-everywhere"] => {
             let n = gym_server::admin::sign_out_everywhere(&db).await?;

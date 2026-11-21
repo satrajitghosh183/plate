@@ -54,6 +54,7 @@ scripts/plate.sh login email you@example.com   # the only email password and Goo
 scripts/plate.sh login password                # typed, never shown or stored in plain text
 scripts/plate.sh login google                  # needs GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env
 scripts/plate.sh logout-everywhere
+scripts/plate.sh import-health ~/Downloads/export.zip   # past days from Apple Health's "Export All Health Data"
 ```
 
 For `authorize`, put the developer app's id and secret in `.env` first: an app at
